@@ -95,6 +95,14 @@
           "default": false,
           "description": "Zusätzlich zur nativen Coverage-Ansicht einen HTML-Coverage-Report per ut_coverage_html_reporter erzeugen und in einem Webview anzeigen."
         },
+        "utplsql.coverage.excludeObjects": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Zusätzliche Objektnamen (z.B. UT, UT_EXPECTATION), die von der automatisch ermittelten Coverage-Scope ausgeschlossen werden sollen — z.B. wenn das utPLSQL-Framework selbst im gleichen Schema wie der getestete Code installiert ist und dadurch als Abhängigkeit des Testpakets erkannt wird."
+        },
         "utplsql.generate.testPackagePrefix": {
           "type": "string",
           "default": "test_"

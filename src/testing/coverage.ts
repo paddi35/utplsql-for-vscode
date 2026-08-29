@@ -5,7 +5,7 @@ import { getProfile } from '../db/connections';
 import * as dao from '../db/utplsqlDao';
 import { CoverageOptions } from '../db/realtimeDao';
 import { UtplsqlContext } from './model';
-import { resolveWorkspaceRelativePath } from './coveragePaths';
+import { virtualSourceUri } from '../workspace/virtualSource';
 import { groupRequest, runOneProfile } from './runHandler';
 
 const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
@@ -23,8 +23,19 @@ interface FileLineHits {
 /**
  * Parses ut_coverage_sonar_reporter's SonarQube generic coverage XML:
  * <coverage version="1"><file path="..."><lineToCover lineNumber="n" covered="true|false"/></file></coverage>
+ *
+ * pathToUri gates which <file path="..."> entries are trusted: when an
+ * executed object has no matching a_source_file_mappings entry, the reporter
+ * doesn't omit it — it falls back to a synthetic default path of its own
+ * devising, observed as e.g. "package ut3.calc_pkg" against a live utPLSQL
+ * 3.2.3 instance. Treating that as a real path used to make it show up as a
+ * bogus FileCoverage entry that VS Code then fails to open ("Unable to open
+ * 'package ut3.calc_pkg'") when the user inspects it. buildCoverageOptions
+ * builds this map (local workspace URI or virtual DB-source URI, see
+ * workspace/virtualSource.ts) for every path it actually sent, so anything
+ * else is dropped (and logged) instead of resolved.
  */
-function parseSonarCoverage(xml: string, resolveUri: (path: string) => vscode.Uri | undefined): FileLineHits[] {
+function parseSonarCoverage(xml: string, pathToUri: ReadonlyMap<string, vscode.Uri>, onUnknownPath: (path: string) => void): FileLineHits[] {
     const doc = xmlParser.parse(xml) as Record<string, unknown>;
     const root = doc.coverage as Record<string, unknown> | undefined;
     if (!root) {
@@ -34,8 +45,9 @@ function parseSonarCoverage(xml: string, resolveUri: (path: string) => vscode.Ur
     const result: FileLineHits[] = [];
     for (const file of files) {
         const path = String((file as Record<string, unknown>)['@_path'] ?? '');
-        const uri = resolveUri(path);
+        const uri = pathToUri.get(path);
         if (!uri) {
+            onUnknownPath(path);
             continue;
         }
         const lines = new Map<number, boolean>();
@@ -64,12 +76,12 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
                 group.items.forEach((i) => run.skipped(i));
                 continue;
             }
-            const coverageOptions = await buildCoverageOptions(ctx, profile, group.items);
+            const built = await buildCoverageOptions(ctx, profile, group.items);
             const result = await runOneProfile(ctx, run, profile, group.items, group.paths, token, {
-                coverage: coverageOptions
+                coverage: built?.options
             });
             if (result.coverageXml) {
-                applyCoverage(run, detailByUri, result.coverageXml);
+                applyCoverage(ctx, run, detailByUri, result.coverageXml, built?.pathToUri ?? new Map());
             }
             if (result.htmlReport && vscode.workspace.getConfiguration('utplsql').get<boolean>('coverage.htmlReport')) {
                 showHtmlReport(result.htmlReport);
@@ -80,11 +92,12 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
     }
 }
 
-async function buildCoverageOptions(
-    ctx: UtplsqlContext,
-    profile: string,
-    items: vscode.TestItem[]
-): Promise<CoverageOptions | undefined> {
+interface BuiltCoverage {
+    options: CoverageOptions;
+    pathToUri: Map<string, vscode.Uri>;
+}
+
+async function buildCoverageOptions(ctx: UtplsqlContext, profile: string, items: vscode.TestItem[]): Promise<BuiltCoverage | undefined> {
     const cfg = getProfile(profile);
     if (!cfg) {
         return undefined;
@@ -107,31 +120,85 @@ async function buildCoverageOptions(
             deps.forEach((d) => includeObjects.set(`${d.owner}.${d.name}`, d));
         }
 
+        // Dependency discovery can't tell the utPLSQL framework's own
+        // packages (e.g. UT, UT_EXPECTATION) apart from real code under
+        // test when the framework is installed into the same schema as the
+        // tests — every test necessarily calls ut.expect(...), so they
+        // always show up as a direct dependency. There is no reliable
+        // signal in *_dependencies to filter those out automatically, so
+        // this is a user-maintained denylist instead of a guessed one.
+        const userExcluded = new Set(
+            vscode.workspace
+                .getConfiguration('utplsql')
+                .get<string[]>('coverage.excludeObjects', [])
+                .map((n) => n.toUpperCase())
+        );
+        for (const [key, { name }] of includeObjects) {
+            if (userExcluded.has(name)) {
+                includeObjects.delete(key);
+            }
+        }
+
         const fileMappings: CoverageOptions['fileMappings'] = [];
+        const pathToUri = new Map<string, vscode.Uri>();
         for (const { owner, name } of includeObjects.values()) {
             const loc = ctx.sourceIndex.lookupPackage(name);
-            if (!loc) {
+            if (loc) {
+                const file = vscode.workspace.asRelativePath(loc.uri, false).replace(/\\/g, '/');
+                ctx.output.appendLine(`utPLSQL: coverage — mapped '${owner}.${name}' to local file '${file}'`);
+                fileMappings.push({ file, owner, name, type: loc.isBody ? 'PACKAGE BODY' : 'PACKAGE' });
+                pathToUri.set(file, loc.uri);
                 continue;
             }
-            const file = vscode.workspace.asRelativePath(loc.uri, false).replace(/\\/g, '/');
-            fileMappings.push({ file, owner, name, type: loc.isBody ? 'PACKAGE BODY' : 'PACKAGE' });
+
+            // No local workspace file (e.g. this project keeps the DB as
+            // the sole source of truth) — fall back to a virtual,
+            // DB-backed document instead of dropping the object from
+            // coverage entirely, so native gutters/the Test Coverage panel
+            // still get something to point at.
+            const objType = await dao.getPackageObjectType(scopeConn, owner, name);
+            if (!objType) {
+                ctx.output.appendLine(
+                    `utPLSQL: coverage — '${owner}.${name}' has neither a local file nor a PACKAGE/PACKAGE BODY in the database, excluding it from a_source_file_mappings`
+                );
+                continue;
+            }
+            const isBody = objType === 'PACKAGE BODY';
+            const uri = virtualSourceUri(profile, owner, name, isBody);
+            const file = `${owner}/${name}.${isBody ? 'pkb' : 'pks'}`;
+            ctx.output.appendLine(`utPLSQL: coverage — no local source file for '${owner}.${name}', mapped to virtual DB source '${file}'`);
+            fileMappings.push({ file, owner, name, type: objType });
+            pathToUri.set(file, uri);
         }
 
         return {
-            reporter: 'ut_coverage_sonar_reporter',
-            schemes: [...owners],
-            includeObjects: [...includeObjects.values()].map((v) => v.name),
-            excludeObjects: [...testObjectNames],
-            fileMappings,
-            htmlReport: vscode.workspace.getConfiguration('utplsql').get<boolean>('coverage.htmlReport', false)
+            options: {
+                reporter: 'ut_coverage_sonar_reporter',
+                schemes: [...owners],
+                includeObjects: [...includeObjects.values()].map((v) => v.name),
+                excludeObjects: [...testObjectNames],
+                fileMappings,
+                htmlReport: vscode.workspace.getConfiguration('utplsql').get<boolean>('coverage.htmlReport', false)
+            },
+            pathToUri
         };
     } finally {
         await scopeConn.close();
     }
 }
 
-function applyCoverage(run: vscode.TestRun, detailByUri: Map<string, vscode.StatementCoverage[]>, xml: string): void {
-    const files = parseSonarCoverage(xml, (path) => resolveWorkspaceUri(path));
+function applyCoverage(
+    ctx: UtplsqlContext,
+    run: vscode.TestRun,
+    detailByUri: Map<string, vscode.StatementCoverage[]>,
+    xml: string,
+    pathToUri: ReadonlyMap<string, vscode.Uri>
+): void {
+    const files = parseSonarCoverage(xml, pathToUri, (path) =>
+        ctx.output.appendLine(
+            `utPLSQL: coverage — ignoring file path '${path}' from the coverage report: it doesn't match any a_source_file_mappings entry we sent, likely the reporter's fallback name for an object whose local source file wasn't found`
+        )
+    );
     for (const file of files) {
         const statements = [...file.lines.entries()].map(
             ([line, covered]) => new vscode.StatementCoverage(covered, new vscode.Position(Math.max(0, line - 1), 0))
@@ -141,12 +208,6 @@ function applyCoverage(run: vscode.TestRun, detailByUri: Map<string, vscode.Stat
         const summary = new vscode.TestCoverageCount(coveredCount, statements.length);
         run.addCoverage(new vscode.FileCoverage(file.uri, summary));
     }
-}
-
-function resolveWorkspaceUri(relativePath: string): vscode.Uri | undefined {
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    const normalized = resolveWorkspaceRelativePath(relativePath);
-    return folder && normalized ? vscode.Uri.joinPath(folder.uri, normalized) : undefined;
 }
 
 export async function loadDetailedCoverage(
@@ -162,7 +223,12 @@ let htmlPanel: vscode.WebviewPanel | undefined;
 function showHtmlReport(html: string): void {
     if (!htmlPanel) {
         htmlPanel = vscode.window.createWebviewPanel('utplsqlCoverage', 'utPLSQL Coverage', vscode.ViewColumn.Beside, {
-            enableScripts: false
+            // ut_coverage_html_reporter's output is a self-contained report
+            // with its own inline <script> (e.g. for the collapsible
+            // file/line view) — with scripts disabled the panel opens but
+            // stays blank/inert. The content comes from the user's own DB
+            // via a reporter they explicitly enabled, not untrusted input.
+            enableScripts: true
         });
         htmlPanel.onDidDispose(() => {
             htmlPanel = undefined;

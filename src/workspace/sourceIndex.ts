@@ -23,8 +23,22 @@ export class SourceIndex implements vscode.Disposable {
         this.disposables.push(
             vscode.workspace.onDidOpenTextDocument((doc) => this.indexDocument(doc)),
             vscode.workspace.onDidChangeTextDocument((e) => this.scheduleReindex(e.document)),
-            vscode.workspace.onDidCloseTextDocument(() => undefined)
+            vscode.workspace.onDidCloseTextDocument(() => undefined),
+            vscode.workspace.onDidChangeConfiguration((e) => this.onConfigurationChanged(e))
         );
+    }
+
+    /**
+     * files.associations changes which on-disk files even become candidates
+     * (see collectGlobPatterns()), and utplsql.discovery.languageIds changes
+     * which language ids count — either one can turn a file that used to be
+     * invisible to lookupPackage() into a match (or vice versa), so a full
+     * rescan is needed rather than just re-parsing already-known files.
+     */
+    private onConfigurationChanged(e: vscode.ConfigurationChangeEvent): void {
+        if (e.affectsConfiguration('files.associations') || e.affectsConfiguration('utplsql.discovery.languageIds')) {
+            void this.buildFullIndex();
+        }
     }
 
     dispose(): void {

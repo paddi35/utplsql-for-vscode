@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { Connection } from 'oracledb';
 import { XMLParser } from 'fast-xml-parser';
 import { CoverageOptions } from '../../src/db/realtimeDao';
+import { getPackageObjectTypes, includes } from '../../src/db/utplsqlDao';
 import { getTestPool, closeTestPool, TEST_OWNER } from './support/db';
 import { installFixture } from './support/fixture';
 import { runPathsAndCollect } from './support/runProfile';
@@ -39,6 +40,34 @@ describe('coverage reporting against a real schema [integration]', function () {
         await producerConn.close();
         await consumerConn.close();
         await closeTestPool();
+    });
+
+    it('resolves what the test package depends on, not what depends on the test package', async () => {
+        // dao.includes(owner, name) used to query *_dependencies backwards
+        // (WHERE referenced_owner/referenced_name = :owner/:name), which
+        // finds objects that reference TEST_CALC_PKG instead of objects
+        // TEST_CALC_PKG references — in practice returning just
+        // TEST_CALC_PKG itself (its body implicitly depends on its own
+        // spec), so buildCoverageOptions() ended up scoping coverage to the
+        // test package instead of CALC_PKG and producing an empty
+        // a_source_file_mappings, i.e. no coverage was ever reported.
+        const deps = await includes(producerConn, TEST_OWNER, 'TEST_CALC_PKG');
+        assert.ok(
+            deps.some((d) => d.owner === TEST_OWNER && d.name === 'CALC_PKG'),
+            `expected CALC_PKG among TEST_CALC_PKG's dependencies, got ${JSON.stringify(deps)}`
+        );
+    });
+
+    it('resolves PACKAGE BODY over PACKAGE, and omits names that are neither', async () => {
+        // Backs coverage.ts's and controller.ts's virtual-source fallback
+        // (used when there is no local workspace file for an object): both
+        // need to know whether to point at the body or the spec, and to
+        // simply skip names that aren't a package/package body at all
+        // (e.g. a typo, or an object type this feature doesn't support).
+        const types = await getPackageObjectTypes(producerConn, TEST_OWNER, ['CALC_PKG', 'TEST_CALC_PKG', 'DOES_NOT_EXIST']);
+        assert.equal(types.get('CALC_PKG'), 'PACKAGE BODY');
+        assert.equal(types.get('TEST_CALC_PKG'), 'PACKAGE BODY');
+        assert.equal(types.has('DOES_NOT_EXIST'), false);
     });
 
     it('reports the workspace-relative file path and plausible line hits for the executed test only', async () => {

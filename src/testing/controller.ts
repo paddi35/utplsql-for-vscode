@@ -4,6 +4,7 @@ import { getProfile, readProfiles } from '../db/connections';
 import * as dao from '../db/utplsqlDao';
 import { SuiteInfoRow } from '../db/utplsqlDao';
 import { SourceIndex } from '../workspace/sourceIndex';
+import { virtualSourceUri } from '../workspace/virtualSource';
 import { parseId, pathId, rootId, schemaId } from './ids';
 import { MetaStore, UtplsqlContext } from './model';
 import { runTests } from './runHandler';
@@ -41,6 +42,12 @@ function ctxSecrets(): vscode.SecretStorage {
     return secretsRef;
 }
 
+function pointAt(uri: vscode.Uri, itemLineNo: number | undefined): { uri: vscode.Uri; range: vscode.Range } {
+    const line = itemLineNo !== undefined ? Math.max(0, itemLineNo - 1) : 0;
+    const pos = new vscode.Position(line, 0);
+    return { uri, range: new vscode.Range(pos, pos) };
+}
+
 function resolveLocation(sourceIndex: SourceIndex, row: SuiteInfoRow): { uri: vscode.Uri; range: vscode.Range } | undefined {
     const location =
         row.itemType === 'UT_TEST'
@@ -52,27 +59,77 @@ function resolveLocation(sourceIndex: SourceIndex, row: SuiteInfoRow): { uri: vs
     if (row.itemLineNo === undefined) {
         return { uri: location.uri, range: location.range };
     }
-    const line = Math.max(0, row.itemLineNo - 1);
-    const pos = new vscode.Position(line, 0);
-    return { uri: location.uri, range: new vscode.Range(pos, pos) };
+    return pointAt(location.uri, row.itemLineNo);
 }
 
-function buildSchemaTree(
+/**
+ * Same idea as coverage.ts's virtual-source fallback: when there's no local
+ * workspace file to point a test item at (the DB is the sole source of
+ * truth), point it at a virtual utplsql-source:// document instead, so
+ * "go to test"/"go to failing assertion" still works. types comes from one
+ * batched getPackageObjectTypes() call per schema rather than a query per
+ * row — every test in the same package shares the same underlying object.
+ */
+function resolveVirtualLocation(
+    profile: string,
+    owner: string,
+    row: SuiteInfoRow,
+    types: ReadonlyMap<string, 'PACKAGE BODY' | 'PACKAGE'>
+): { uri: vscode.Uri; range: vscode.Range } | undefined {
+    const type = types.get(row.objectName.toUpperCase());
+    if (!type) {
+        return undefined;
+    }
+    return pointAt(virtualSourceUri(profile, owner, row.objectName, type === 'PACKAGE BODY'), row.itemLineNo);
+}
+
+async function resolveVirtualTypes(
+    secrets: vscode.SecretStorage,
+    profile: string,
+    owner: string,
+    names: string[]
+): Promise<Map<string, 'PACKAGE BODY' | 'PACKAGE'>> {
+    if (names.length === 0) {
+        return new Map();
+    }
+    const cfg = getProfile(profile);
+    if (!cfg) {
+        return new Map();
+    }
+    const conn = await getConnection(cfg, secrets);
+    try {
+        return await dao.getPackageObjectTypes(conn, owner, names);
+    } finally {
+        await conn.close();
+    }
+}
+
+async function buildSchemaTree(
     controller: vscode.TestController,
     meta: MetaStore,
     sourceIndex: SourceIndex,
     schemaItem: vscode.TestItem,
     profile: string,
     owner: string,
-    rows: SuiteInfoRow[]
-): void {
+    rows: SuiteInfoRow[],
+    secrets: vscode.SecretStorage
+): Promise<void> {
     const forOwner = rows.filter((r) => r.objectOwner.toUpperCase() === owner.toUpperCase());
     forOwner.sort((a, b) => a.path.split('.').length - b.path.split('.').length);
+
+    const missingNames = new Set<string>();
+    for (const row of forOwner) {
+        if (!resolveLocation(sourceIndex, row)) {
+            missingNames.add(row.objectName);
+        }
+    }
+    const virtualTypes = await resolveVirtualTypes(secrets, profile, owner, [...missingNames]);
+
     const created = new Map<string, vscode.TestItem>();
 
     for (const row of forOwner) {
         const id = pathId(profile, owner, row.path);
-        const location = resolveLocation(sourceIndex, row);
+        const location = resolveLocation(sourceIndex, row) ?? resolveVirtualLocation(profile, owner, row, virtualTypes);
         const item = controller.createTestItem(id, row.itemDescription || row.itemName, location?.uri);
         if (location) {
             item.range = location.range;
@@ -167,7 +224,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
             item.children.replace([]);
             try {
                 const rows = await fetchSuiteRows(parsed.profile);
-                buildSchemaTree(controller, meta, sourceIndex, item, parsed.profile, parsed.owner, rows);
+                await buildSchemaTree(controller, meta, sourceIndex, item, parsed.profile, parsed.owner, rows, extCtx.secrets);
             } catch (err) {
                 reportResolveError(item, err);
             }

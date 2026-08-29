@@ -6,6 +6,14 @@ export const VERSION_GET_SUITES_INFO = 3001003; // 3.1.3
 
 /** Schemas excluded from the coverage object list, mirroring UtplsqlDao. */
 const EXCLUDED_SCHEMA_PATTERNS = [
+    // Dependencies resolved through a PUBLIC synonym (e.g. a bare
+    // DBMS_SESSION.sleep() call) show up with referenced_owner = 'PUBLIC',
+    // not the underlying SYS/built-in package's real owner — without this,
+    // any test calling a public-synonym'd built-in pulls it into
+    // a_include_objects, and it then has no local source file so it's
+    // wasted round-trips at best (see coverage.ts's "no local source file
+    // found" logging) or a huge report to render at worst.
+    'PUBLIC',
     'SYS',
     'SYSTEM',
     'OUTLN',
@@ -145,15 +153,72 @@ export async function includes(conn: Connection, owner: string, name: string): P
     const view = await getDbaView(conn);
     const exclusionCsv = EXCLUDED_SCHEMA_PATTERNS.map((s) => `'${s}'`).join(', ');
     const result = await conn.execute<Record<string, unknown>>(
-        `SELECT DISTINCT owner, name
+        `SELECT DISTINCT referenced_owner AS owner, referenced_name AS name
            FROM ${view}dependencies
-          WHERE referenced_owner = upper(:owner)
-            AND referenced_name = upper(:name)
-            AND owner NOT IN (${exclusionCsv})
-            AND owner NOT LIKE 'APEX\\_______' ESCAPE '\\'`,
+          WHERE owner = upper(:owner)
+            AND name = upper(:name)
+            AND referenced_owner NOT IN (${exclusionCsv})
+            AND referenced_owner NOT LIKE 'APEX\\_______' ESCAPE '\\'`,
         { owner, name }
     );
     return (result.rows ?? []).map((r) => ({ owner: String(r.OWNER), name: String(r.NAME) }));
+}
+
+/**
+ * Which of PACKAGE BODY / PACKAGE actually exists for each of owner.names,
+ * preferring BODY (that's where the executable, coverable statements are; a
+ * spec-only package has none). A name absent from the result has neither —
+ * it isn't a package/package body in this schema at all. Used to build a
+ * coverage file mapping, or a Test Explorer navigation target, for objects
+ * with no local workspace file — see workspace/virtualSource.ts.
+ */
+export async function getPackageObjectTypes(conn: Connection, owner: string, names: string[]): Promise<Map<string, 'PACKAGE BODY' | 'PACKAGE'>> {
+    const result = new Map<string, 'PACKAGE BODY' | 'PACKAGE'>();
+    if (names.length === 0) {
+        return result;
+    }
+    const view = await getDbaView(conn);
+    const binds: Record<string, string> = { owner };
+    const bindNames = names.map((n, i) => {
+        const key = `n${i}`;
+        binds[key] = n.toUpperCase();
+        return `:${key}`;
+    });
+    const query = await conn.execute<Record<string, unknown>>(
+        `SELECT object_name, object_type
+           FROM ${view}objects
+          WHERE owner = upper(:owner)
+            AND object_name IN (${bindNames.join(', ')})
+            AND object_type IN ('PACKAGE BODY', 'PACKAGE')`,
+        binds
+    );
+    for (const r of query.rows ?? []) {
+        const name = String(r.OBJECT_NAME);
+        const type = String(r.OBJECT_TYPE) as 'PACKAGE BODY' | 'PACKAGE';
+        if (result.get(name) !== 'PACKAGE BODY') {
+            result.set(name, type);
+        }
+    }
+    return result;
+}
+
+export async function getPackageObjectType(conn: Connection, owner: string, name: string): Promise<'PACKAGE BODY' | 'PACKAGE' | undefined> {
+    return (await getPackageObjectTypes(conn, owner, [name])).get(name.toUpperCase());
+}
+
+/** Full source text of a PACKAGE/PACKAGE BODY, reassembled from {dba|all}_source in line order. */
+export async function getObjectSource(conn: Connection, owner: string, name: string, type: 'PACKAGE BODY' | 'PACKAGE'): Promise<string> {
+    const view = await getDbaView(conn);
+    const result = await conn.execute<Record<string, unknown>>(
+        `SELECT text
+           FROM ${view}source
+          WHERE owner = upper(:owner)
+            AND name = upper(:name)
+            AND type = :type
+          ORDER BY line`,
+        { owner, name, type }
+    );
+    return (result.rows ?? []).map((r) => String(r.TEXT ?? '')).join('');
 }
 
 export async function getReportersList(conn: Connection): Promise<ReporterInfo[]> {
