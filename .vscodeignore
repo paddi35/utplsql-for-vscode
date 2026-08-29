@@ -8,13 +8,10 @@ docker/**
 .env
 docker-compose.yml
 tsconfig.json
-erstelle-mir-einen-plan-robust-abelson.md
 **/*.map
 **/tsconfig.json
 **/.eslintrc*
 
-# Already inlined into dist/extension.js by esbuild (only oracledb stays
-# external and needs its real node_modules folder at runtime, since it isn't
-# pure JS-bundleable the way fast-xml-parser/strnum are).
-node_modules/fast-xml-parser/**
-node_modules/strnum/**
+# All runtime dependencies (oracledb included) are inlined into
+# dist/extension.js by esbuild, so none of node_modules is needed at runtime.
+node_modules/**

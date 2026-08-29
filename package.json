@@ -186,9 +186,9 @@
   },
   "scripts": {
     "postinstall": "cd node_modules/oracledb && node package/prunebinaries.js all",
-    "build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --external:oracledb --outfile=dist/extension.js --format=cjs --sourcemap",
+    "build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=dist/extension.js --format=cjs --sourcemap",
     "watch": "npm run build -- --watch",
-    "vscode:prepublish": "esbuild src/extension.ts --bundle --platform=node --external:vscode --external:oracledb --outfile=dist/extension.js --format=cjs --minify",
+    "vscode:prepublish": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=dist/extension.js --format=cjs --minify",
     "package": "vsce package",
     "publish": "vsce publish",
     "typecheck": "tsc --noEmit",
