@@ -29,6 +29,10 @@ jobs:
 
   integration-tests:
     runs-on: ubuntu-latest
+    env:
+      # Applies docker-compose.ci.yml on top of the base file for every
+      # `docker compose` call below without repeating -f each time.
+      COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
     steps:
       # Oracle Free's first-start DB creation needs a fair amount of disk;
       # ubuntu-latest runners are tight on space by default, so drop

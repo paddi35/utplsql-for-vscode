@@ -1,0 +1,24 @@
+# CI-only overrides for docker-compose.yml — applied on top of the base file
+# via `docker compose -f docker-compose.yml -f docker-compose.ci.yml` (see
+# ci.yml's integration-tests job).
+services:
+  oracle-utplsql:
+    environment:
+      # The extension's own integration tests only need the UT3 schema
+      # installed by 10-install-utplsql.sh (see test/integration/support/
+      # fixture.sql) — never UT3_TESTER/UT3_USER/UT3_TESTER_HELPER, which
+      # 20-install-utplsql-tests.sh installs solely to exercise utPLSQL's
+      # own framework internals. Skipping it removes a large chunk of
+      # otherwise-unused DDL/grant work during first-time DB creation.
+      UTPLSQL_INSTALL_TESTS: "false"
+    # GitHub-hosted runners' disk I/O is slow enough that Oracle's redo log
+    # checkpointing couldn't keep up during first-time DB creation
+    # ("Thread 1 cannot allocate new log ... Checkpoint not complete",
+    # repeating every few minutes) — creation didn't finish within a
+    # 15-minute timeout. Backing the datafiles with tmpfs (RAM) removes
+    # that bottleneck; durability doesn't matter for a throwaway CI
+    # database, and there's no cross-run volume to persist anyway since
+    # each CI job starts from nothing.
+    volumes: !reset []
+    tmpfs:
+      - /opt/oracle/oradata
