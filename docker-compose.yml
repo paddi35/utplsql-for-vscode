@@ -1,0 +1,33 @@
+services:
+  oracle-utplsql:
+    build:
+      context: ./docker/oracle-utplsql
+      args:
+        ORACLE_IMAGE_TAG: 23-slim-faststart
+        UTPLSQL_TAG: v.3.2.3
+    image: oracle-free-utplsql:23-slim
+    container_name: oracle-utplsql
+    ports:
+      - "1521:1521"
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD:-oracle}
+      # Optionaler Anwendungsschema-User (auskommentieren, falls nicht benoetigt)
+      # APP_USER: app
+      # APP_USER_PASSWORD: app
+      # Passwort fuer das UT3-Schema (Default: identisch zu ORACLE_PASSWORD)
+      # UTPLSQL_SCHEMA_PASSWORD: ut3
+      # utPLSQL-Test-Suite (test/) mitinstallieren (Default: true). Legt u.a.
+      # UT3_TESTER_HELPER mit sehr weitreichenden Rechten an (ANY TABLE/
+      # PROCEDURE/TYPE, CREATE PUBLIC DATABASE LINK, CREATE JOB) - nur fuer
+      # lokale Dev-/Test-Datenbanken gedacht. Mit "false" abschaltbar.
+      # UTPLSQL_INSTALL_TESTS: "true"
+      # Passwort fuer die Test-Schemas UT3_TESTER/UT3_USER/UT3_TESTER_HELPER
+      # (Default: identisch zu UTPLSQL_SCHEMA_PASSWORD/ORACLE_PASSWORD)
+      # UTPLSQL_TEST_SCHEMA_PASSWORD: ut3
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+    # HEALTHCHECK ist bereits im Basis-Image (gvenzl/oracle-free) definiert
+    # und wird automatisch geerbt.
+
+volumes:
+  oracle-data:

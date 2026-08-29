@@ -1,0 +1,221 @@
+{
+  "name": "utplsql-for-vscode",
+  "displayName": "utPLSQL for VS Code",
+  "description": "Run and debug utPLSQL unit tests via the native VS Code Testing API, including code coverage, reporter export and test generation.",
+  "version": "0.1.0",
+  "publisher": "paddi35",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paddi35/utplsql-for-vscode.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Testing"
+  ],
+  "icon": "icon.png",
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "oracle-sql",
+        "aliases": [
+          "Oracle PL/SQL",
+          "oracle-sql"
+        ],
+        "extensions": [
+          ".pkb",
+          ".pks",
+          ".pls",
+          ".plb",
+          ".tps",
+          ".tpb",
+          ".prc",
+          ".fnc",
+          ".trg",
+          ".vw"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "utPLSQL",
+      "properties": {
+        "utplsql.connections": {
+          "type": "array",
+          "default": [],
+          "description": "Verbindungsprofile für utPLSQL. Passwörter werden separat im SecretStorage abgelegt (utplsql.setPassword).",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "user",
+              "connectString"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Eindeutiger Profilname."
+              },
+              "user": {
+                "type": "string",
+                "description": "DB-Benutzer."
+              },
+              "connectString": {
+                "type": "string",
+                "description": "Easy-Connect-String oder TNS-Alias."
+              },
+              "defaultSchema": {
+                "type": "string",
+                "description": "Optionales abweichendes Schema für die Discovery."
+              }
+            }
+          }
+        },
+        "utplsql.connections.tnsAdminPath": {
+          "type": "string",
+          "default": "",
+          "description": "Ordner mit tnsnames.ora (TNS_ADMIN). Wenn leer, wird die Einstellung 'sqldeveloper.connections.tnsConfiguration.path' der Oracle-SQL-Developer-Extension übernommen, falls gesetzt, sonst die Umgebungsvariable TNS_ADMIN. Wird als connectString direkt der Alias eingetragen, löst node-oracledb ihn beim Verbindungsaufbau selbst auf."
+        },
+        "utplsql.discovery.languageIds": {
+          "type": "array",
+          "default": [
+            "sql",
+            "oracle-sql"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Language-IDs, die als PL/SQL-Quelldateien für Discovery und Parsing berücksichtigt werden."
+        },
+        "utplsql.coverage.htmlReport": {
+          "type": "boolean",
+          "default": false,
+          "description": "Zusätzlich zur nativen Coverage-Ansicht einen HTML-Coverage-Report per ut_coverage_html_reporter erzeugen und in einem Webview anzeigen."
+        },
+        "utplsql.generate.testPackagePrefix": {
+          "type": "string",
+          "default": "test_"
+        },
+        "utplsql.generate.testPackageSuffix": {
+          "type": "string",
+          "default": ""
+        },
+        "utplsql.generate.testUnitPrefix": {
+          "type": "string",
+          "default": ""
+        },
+        "utplsql.generate.testUnitSuffix": {
+          "type": "string",
+          "default": ""
+        },
+        "utplsql.generate.numberOfTestsPerUnit": {
+          "type": "integer",
+          "default": 1
+        },
+        "utplsql.generate.generateComments": {
+          "type": "boolean",
+          "default": true
+        },
+        "utplsql.generate.disableTests": {
+          "type": "boolean",
+          "default": false
+        },
+        "utplsql.generate.suitePath": {
+          "type": "string",
+          "default": "alltests"
+        },
+        "utplsql.generate.indentSpaces": {
+          "type": "integer",
+          "default": 3
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "utplsql.addConnection",
+        "title": "utPLSQL: Add Connection"
+      },
+      {
+        "command": "utplsql.setPassword",
+        "title": "utPLSQL: Set Password for Connection"
+      },
+      {
+        "command": "utplsql.removeConnection",
+        "title": "utPLSQL: Remove Connection"
+      },
+      {
+        "command": "utplsql.runTestAtCursor",
+        "title": "utPLSQL: Run Test at Cursor"
+      },
+      {
+        "command": "utplsql.runWithReporter",
+        "title": "utPLSQL: Run with Reporter (Export)"
+      },
+      {
+        "command": "utplsql.generateTest",
+        "title": "utPLSQL: Generate Test Package"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "utplsql.runTestAtCursor",
+          "when": "editorLangId == sql || editorLangId == oracle-sql",
+          "group": "utplsql"
+        },
+        {
+          "command": "utplsql.generateTest",
+          "when": "editorLangId == sql || editorLangId == oracle-sql",
+          "group": "utplsql"
+        }
+      ]
+    },
+    "snippets": [
+      {
+        "language": "sql",
+        "path": "./snippets/utplsql.code-snippets"
+      },
+      {
+        "language": "oracle-sql",
+        "path": "./snippets/utplsql.code-snippets"
+      }
+    ]
+  },
+  "scripts": {
+    "postinstall": "cd node_modules/oracledb && node package/prunebinaries.js all",
+    "build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --external:oracledb --outfile=dist/extension.js --format=cjs --sourcemap",
+    "watch": "npm run build -- --watch",
+    "vscode:prepublish": "esbuild src/extension.ts --bundle --platform=node --external:vscode --external:oracledb --outfile=dist/extension.js --format=cjs --minify",
+    "package": "vsce package",
+    "publish": "vsce publish",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "mocha --require ts-node/register --extensions ts \"test/unit/**/*.test.ts\"",
+    "pretest:unit": "echo using ts-node",
+    "test:integration": "mocha --require ts-node/register --extensions ts --timeout 30000 \"test/integration/**/*.test.ts\"",
+    "test": "npm run typecheck && npm run test:unit"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.7",
+    "@types/node": "^20.14.0",
+    "@types/oracledb": "^6.10.4",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.23.0",
+    "mocha": "^10.7.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.4.1",
+    "oracledb": "^6.6.0"
+  },
+  "allowScripts": {
+    "esbuild@0.23.1": true,
+    "oracledb@6.10.0": true,
+    "@vscode/vsce-sign@2.1.0": true,
+    "keytar@7.9.0": true
+  }
+}

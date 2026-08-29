@@ -1,0 +1,87 @@
+{
+  "utPLSQL suite package": {
+    "prefix": "ut-suite",
+    "body": [
+      "CREATE OR REPLACE PACKAGE ${1:test_package} IS",
+      "",
+      "   --%suite(${2:Description})",
+      "   --%suitepath(${3:alltests})",
+      "",
+      "   --%test(${4:Description})",
+      "   PROCEDURE ${5:test_name};",
+      "",
+      "END ${1:test_package};",
+      "/"
+    ],
+    "description": "utPLSQL test suite package skeleton"
+  },
+  "utPLSQL %suite": {
+    "prefix": "ut-%suite",
+    "body": "--%suite(${1:Description})",
+    "description": "utPLSQL %suite annotation"
+  },
+  "utPLSQL %suitepath": {
+    "prefix": "ut-%suitepath",
+    "body": "--%suitepath(${1:alltests})",
+    "description": "utPLSQL %suitepath annotation"
+  },
+  "utPLSQL %test": {
+    "prefix": "ut-%test",
+    "body": "--%test(${1:Description})",
+    "description": "utPLSQL %test annotation"
+  },
+  "utPLSQL %context": {
+    "prefix": "ut-%context",
+    "body": [
+      "--%context(${1:Description})",
+      "",
+      "--%endcontext"
+    ],
+    "description": "utPLSQL %context block"
+  },
+  "utPLSQL %beforeall": {
+    "prefix": "ut-%beforeall",
+    "body": "--%beforeall",
+    "description": "utPLSQL %beforeall annotation"
+  },
+  "utPLSQL %afterall": {
+    "prefix": "ut-%afterall",
+    "body": "--%afterall",
+    "description": "utPLSQL %afterall annotation"
+  },
+  "utPLSQL %beforeeach": {
+    "prefix": "ut-%beforeeach",
+    "body": "--%beforeeach",
+    "description": "utPLSQL %beforeeach annotation"
+  },
+  "utPLSQL %aftereach": {
+    "prefix": "ut-%aftereach",
+    "body": "--%aftereach",
+    "description": "utPLSQL %aftereach annotation"
+  },
+  "utPLSQL %disabled": {
+    "prefix": "ut-%disabled",
+    "body": "--%disabled(${1:reason})",
+    "description": "utPLSQL %disabled annotation"
+  },
+  "utPLSQL ut.expect to_equal": {
+    "prefix": "ut-expect-equal",
+    "body": "ut.expect(${1:actual}).to_equal(${2:expected});",
+    "description": "utPLSQL expectation: to_equal"
+  },
+  "utPLSQL ut.expect to_be_null": {
+    "prefix": "ut-expect-null",
+    "body": "ut.expect(${1:actual}).to_be_null;",
+    "description": "utPLSQL expectation: to_be_null"
+  },
+  "utPLSQL ut.expect to_be_empty": {
+    "prefix": "ut-expect-empty",
+    "body": "ut.expect(${1:actual}).to_be_empty;",
+    "description": "utPLSQL expectation: to_be_empty"
+  },
+  "utPLSQL raises_exception": {
+    "prefix": "ut-expect-raise",
+    "body": "ut.expect(${1:actual}).to_raise_exception(${2:-20001});",
+    "description": "utPLSQL expectation: to_raise_exception"
+  }
+}
