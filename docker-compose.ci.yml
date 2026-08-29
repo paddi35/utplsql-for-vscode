@@ -11,14 +11,3 @@ services:
       # own framework internals. Skipping it removes a large chunk of
       # otherwise-unused DDL/grant work during first-time DB creation.
       UTPLSQL_INSTALL_TESTS: "false"
-    # GitHub-hosted runners' disk I/O is slow enough that Oracle's redo log
-    # checkpointing couldn't keep up during first-time DB creation
-    # ("Thread 1 cannot allocate new log ... Checkpoint not complete",
-    # repeating every few minutes) — creation didn't finish within a
-    # 15-minute timeout. Backing the datafiles with tmpfs (RAM) removes
-    # that bottleneck; durability doesn't matter for a throwaway CI
-    # database, and there's no cross-run volume to persist anyway since
-    # each CI job starts from nothing.
-    volumes: !reset []
-    tmpfs:
-      - /opt/oracle/oradata

@@ -27,59 +27,7 @@ jobs:
       - name: Package .vsix
         run: npx vsce package
 
-  integration-tests:
-    runs-on: ubuntu-latest
-    env:
-      # Applies docker-compose.ci.yml on top of the base file for every
-      # `docker compose` call below without repeating -f each time.
-      COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
-    steps:
-      # Oracle Free's first-start DB creation needs a fair amount of disk;
-      # ubuntu-latest runners are tight on space by default, so drop
-      # preinstalled toolchains we don't use here. Runs before setup-node so
-      # it doesn't touch whatever that action places under hostedtoolcache.
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - run: npm ci
-
-      - name: Build Oracle + utPLSQL image
-        run: docker compose build
-
-      - name: Start Oracle + utPLSQL container
-        run: docker compose up -d
-
-      - name: Wait for database to become healthy
-        run: |
-          echo "Waiting for oracle-utplsql container to report healthy (this includes first-time DB creation + utPLSQL install, can take several minutes)..."
-          # Stream the container's own logs live instead of waiting silently,
-          # so a slow/stuck startup is visible in the job log as it happens
-          # rather than only after the timeout via the separate (always())
-          # "Container logs" step further down.
-          docker compose logs -f oracle-utplsql &
-          LOG_PID=$!
-          trap 'kill "$LOG_PID" 2>/dev/null' EXIT
-          timeout 900 bash -c '
-            until [ "$(docker inspect -f "{{.State.Health.Status}}" oracle-utplsql 2>/dev/null)" = "healthy" ]; do
-              sleep 5
-            done
-          '
-
-      - name: Run integration tests
-        run: npm run test:integration
-
-      - name: Container logs
-        if: always()
-        run: docker compose logs
-
-      - name: Tear down containers
-        if: always()
-        run: docker compose down -v
+  # Integration tests run in their own workflow (integration.yml), not on
+  # every push/PR: first-time Oracle DB creation is slow and unpredictable
+  # on GitHub-hosted runners' disks (has taken 15-40+ minutes), which would
+  # otherwise make integration coverage block the normal dev/review loop.
