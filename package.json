@@ -1,6 +1,6 @@
 {
   "name": "utplsql-for-vscode",
-  "displayName": "utPLSQL for VS Code",
+  "displayName": "utPLSQL for VS Code (Unofficial)",
   "description": "Run and debug utPLSQL unit tests via the native VS Code Testing API, including code coverage, reporter export and test generation.",
   "version": "0.1.0",
   "publisher": "paddi35",
