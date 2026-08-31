@@ -24,10 +24,15 @@ services:
       # Passwort fuer die Test-Schemas UT3_TESTER/UT3_USER/UT3_TESTER_HELPER
       # (Default: identisch zu UTPLSQL_SCHEMA_PASSWORD/ORACLE_PASSWORD)
       # UTPLSQL_TEST_SCHEMA_PASSWORD: ut3
-    volumes:
-      - oracle-data:/opt/oracle/oradata
-    # HEALTHCHECK ist bereits im Basis-Image (gvenzl/oracle-free) definiert
-    # und wird automatisch geerbt.
-
-volumes:
-  oracle-data:
+    # Bewusst KEIN Volume auf /opt/oracle/oradata: das faststart-Basis-Image
+    # bringt unter diesem Pfad eine bereits erzeugte 3-GB-Datenbank mit. Ein
+    # leeres Named Volume darueber verdeckt sie, der Entrypoint sieht ein
+    # leeres Verzeichnis und legt die Datenbank komplett neu an -- gemessen
+    # 45+ Minuten auf GitHub-Runnern gegenueber 27 Sekunden ohne Mount.
+    # Fuer die lokale Entwicklung haengt docker-compose.override.yml den
+    # Mount wieder an; Compose laedt diese Datei automatisch, solange
+    # COMPOSE_FILE nicht gesetzt ist (in CI ist es das, siehe
+    # .github/workflows/integration.yml).
+    #
+    # Der HEALTHCHECK kommt aus dem Dockerfile, nicht von hier -- das
+    # gvenzl-Basis-Image deklariert entgegen der frueheren Annahme keinen.

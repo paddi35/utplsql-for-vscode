@@ -52,3 +52,12 @@ USER root
 RUN chmod +x /container-entrypoint-initdb.d/10-install-utplsql.sh \
               /container-entrypoint-initdb.d/20-install-utplsql-tests.sh
 USER oracle
+
+# Das Basis-Image bringt /opt/oracle/healthcheck.sh mit (exit 0, sobald die DB
+# offen ist, sonst 2), deklariert aber keine HEALTHCHECK-Instruktion --
+# nachgeprueft mit "docker image inspect --format '{{json .Config.Healthcheck}}'",
+# das liefert null. Ohne diese Zeile bleibt .State.Health.Status dauerhaft leer,
+# und die Warteschleife in .github/workflows/integration.yml, die auf "healthy"
+# pollt, laeuft zwangslaeufig in ihr Timeout -- egal wie schnell die Datenbank
+# tatsaechlich oben ist.
+HEALTHCHECK --interval=10s --timeout=10s --start-period=30s --retries=60 CMD /opt/oracle/healthcheck.sh

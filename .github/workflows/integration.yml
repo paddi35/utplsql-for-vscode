@@ -1,11 +1,24 @@
 name: Integration Tests
 
-# Not run on every push/PR (see ci.yml): first-time Oracle DB creation is
-# slow and unpredictable on GitHub-hosted runners' disks — observed
-# "Checkpoint not complete" stalls during Oracle's own catalog creation,
-# well before any utPLSQL-specific setup even starts, taking 15-40+ minutes
-# in practice. Triggerable on demand, plus a nightly run so regressions
-# still surface without blocking normal development.
+# Deliberately kept off every push/PR (see ci.yml): this job needs a real
+# Oracle instance, and infrastructure-dependent suites do not belong on the
+# critical path of the normal dev/review loop. Triggerable on demand, plus a
+# nightly run so regressions still surface.
+#
+# This used to time out on every single attempt, for two independent reasons,
+# both fixed rather than worked around:
+#
+#   1. docker-compose.yml mounted an empty named volume over
+#      /opt/oracle/oradata, hiding the 3 GB database the faststart base image
+#      already ships there. The entrypoint then created the whole database
+#      from scratch — 45+ minutes, versus 27 seconds measured without the
+#      mount. The volume now lives in docker-compose.override.yml, which
+#      Compose does not load here because COMPOSE_FILE is set below.
+#   2. The image declared no HEALTHCHECK (the base image does not provide
+#      one, contrary to what a comment in docker-compose.yml claimed), so
+#      .State.Health.Status stayed empty forever and the wait loop below
+#      could never succeed no matter how fast the database came up. The
+#      Dockerfile now declares one over the base image's healthcheck.sh.
 on:
   workflow_dispatch:
   schedule:
@@ -44,7 +57,7 @@ jobs:
 
       - name: Wait for database to become healthy
         run: |
-          echo "Waiting for oracle-utplsql container to report healthy (this includes first-time DB creation + utPLSQL install, can take a long time on GitHub-hosted runners' disks)..."
+          echo "Waiting for oracle-utplsql container to report healthy (opening the prebuilt database plus the utPLSQL install; expect well under a minute)..."
           # Stream the container's own logs live instead of waiting silently,
           # so a slow/stuck startup is visible in the job log as it happens
           # rather than only after the timeout via the separate (always())
@@ -52,7 +65,7 @@ jobs:
           docker compose logs -f oracle-utplsql &
           LOG_PID=$!
           trap 'kill "$LOG_PID" 2>/dev/null' EXIT
-          timeout 2700 bash -c '
+          timeout 600 bash -c '
             until [ "$(docker inspect -f "{{.State.Health.Status}}" oracle-utplsql 2>/dev/null)" = "healthy" ]; do
               sleep 5
             done

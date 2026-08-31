@@ -99,6 +99,16 @@ docker compose up -d --build   # starts gvenzl/oracle-free with utPLSQL installe
 npm run test:integration
 ```
 
+The container is ready in well under a minute: the faststart base image ships an already-created
+database, and only the utPLSQL install runs at first startup.
+
+`docker-compose.override.yml` adds a named volume so that database survives a container rebuild.
+Compose picks that file up automatically — but note the volume is populated once and never
+refreshed afterwards, so changes to `docker/oracle-utplsql/init-scripts/` (a new utPLSQL version,
+say) only take effect after `docker compose down -v`. CI sets `COMPOSE_FILE` explicitly and
+therefore runs without the volume, which is deliberate: an empty volume mounted over
+`/opt/oracle/oradata` hides the prebuilt database and forces a full 45-minute recreation.
+
 Point the integration tests at a different instance/schema with the `UTPLSQL_IT_USER`,
 `UTPLSQL_IT_PASSWORD` and `UTPLSQL_IT_CONNECT_STRING` environment variables (defaults match the
 `docker-compose.yml` setup above).

@@ -1,0 +1,24 @@
+# Lokale Entwicklung: haengt ein persistentes Volume an, damit die Datenbank
+# einen Container-Neubau ueberlebt.
+#
+# Compose laedt diese Datei automatisch zusaetzlich zu docker-compose.yml --
+# aber nur, solange COMPOSE_FILE nicht gesetzt ist. Die CI setzt es explizit
+# auf "docker-compose.yml:docker-compose.ci.yml" und bekommt den Mount daher
+# nicht; genau das ist beabsichtigt, weil ein leeres Volume die vorgebaute
+# Datenbank des faststart-Images verdecken und eine 45-minuetige Neuerstellung
+# ausloesen wuerde (siehe Kommentar in docker-compose.yml).
+#
+# Der Mount laesst sich NICHT stattdessen in docker-compose.ci.yml wegnehmen:
+# ein "volumes: []" im Override entfernt den Eintrag der Basisdatei nicht,
+# Compose merged Volume-Eintraege ueber ihren Zielpfad.
+#
+# Achtung: das Volume wird beim allerersten Start einmalig befuellt und danach
+# NICHT mehr aktualisiert. Aenderungen an den init-scripts (z.B. eine neue
+# utPLSQL-Version) wirken erst nach "docker compose down -v".
+services:
+  oracle-utplsql:
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+
+volumes:
+  oracle-data:
