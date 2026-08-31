@@ -179,7 +179,11 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             }
             const request = new vscode.TestRunRequest([item]);
             const tokenSource = new vscode.CancellationTokenSource();
-            await runTests(ctx, request, tokenSource.token);
+            try {
+                await runTests(ctx, request, tokenSource.token);
+            } finally {
+                tokenSource.dispose();
+            }
         }),
 
         vscode.commands.registerCommand('utplsql.runWithReporter', async () => {

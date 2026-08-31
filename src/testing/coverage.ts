@@ -220,20 +220,42 @@ export async function loadDetailedCoverage(
 
 let htmlPanel: vscode.WebviewPanel | undefined;
 
+/**
+ * ut_coverage_html_reporter's output is a self-contained report with its own
+ * inline <script>/<style> (the collapsible file/line view) — with scripts
+ * disabled the panel opens but stays blank/inert, so inline code has to stay
+ * allowed. The report also embeds database-derived text (object names and
+ * package source lines) though, and on a shared database that is not all
+ * written by the person reading the report. This policy therefore permits
+ * exactly the report's own inline code and nothing else: 'none' as the
+ * default covers connect-src, so the panel has no network destination to
+ * send anything to.
+ */
+const REPORT_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;";
+
+function withContentSecurityPolicy(html: string): string {
+    const meta = `<meta http-equiv="Content-Security-Policy" content="${REPORT_CSP}">`;
+    const head = /<head[^>]*>/i.exec(html);
+    if (!head) {
+        return meta + html;
+    }
+    const insertAt = head.index + head[0].length;
+    return html.slice(0, insertAt) + meta + html.slice(insertAt);
+}
+
 function showHtmlReport(html: string): void {
     if (!htmlPanel) {
         htmlPanel = vscode.window.createWebviewPanel('utplsqlCoverage', 'utPLSQL Coverage', vscode.ViewColumn.Beside, {
-            // ut_coverage_html_reporter's output is a self-contained report
-            // with its own inline <script> (e.g. for the collapsible
-            // file/line view) — with scripts disabled the panel opens but
-            // stays blank/inert. The content comes from the user's own DB
-            // via a reporter they explicitly enabled, not untrusted input.
-            enableScripts: true
+            enableScripts: true,
+            // The report is fully self-contained, so it never needs to read
+            // a file; left at its default a webview may load resources from
+            // the extension's install directory and every workspace folder.
+            localResourceRoots: []
         });
         htmlPanel.onDidDispose(() => {
             htmlPanel = undefined;
         });
     }
-    htmlPanel.webview.html = html;
+    htmlPanel.webview.html = withContentSecurityPolicy(html);
     htmlPanel.reveal(vscode.ViewColumn.Beside);
 }

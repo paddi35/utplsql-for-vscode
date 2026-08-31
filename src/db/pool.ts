@@ -11,6 +11,23 @@ oracledb.outFormat = oracledb.OUT_FORMAT_OBJECT;
 
 const pools = new Map<string, oracledb.Pool>();
 
+/**
+ * CURRENT_SCHEMA cannot be set through a bind variable, so defaultSchema is
+ * interpolated into the ALTER SESSION statement below. Connection profiles
+ * are ordinary settings, which a workspace can contribute, so the value is
+ * validated as an unquoted Oracle identifier rather than trusted.
+ */
+const SCHEMA_NAME_RE = /^[A-Za-z][A-Za-z0-9_$#]*$/;
+
+function validateSchemaName(schema: string): string {
+    if (!SCHEMA_NAME_RE.test(schema)) {
+        throw new Error(
+            `utPLSQL: invalid defaultSchema '${schema}' — expected an unquoted Oracle identifier ([A-Za-z][A-Za-z0-9_$#]*).`
+        );
+    }
+    return schema;
+}
+
 /** Two sessions per run are mandatory: one produces, one consumes. */
 const BASE_POOL_MAX = 2;
 
@@ -28,6 +45,7 @@ export async function getPool(
         throw new Error(`No password stored for connection '${profile.name}'. Run "utPLSQL: Set Password for Connection" first.`);
     }
     const configDir = resolveTnsAdminDir();
+    const schema = profile.defaultSchema ? validateSchemaName(profile.defaultSchema) : undefined;
     const pool = await oracledb.createPool({
         user: profile.user,
         password,
@@ -36,6 +54,27 @@ export async function getPool(
         poolMax: BASE_POOL_MAX + extraReporters,
         poolIncrement: 1,
         poolAlias: profile.name,
+        // Runs for every newly created session in this pool, so the profile's
+        // schema applies to every checkout — including the call sites that
+        // take pool.getConnection() directly instead of going through
+        // getConnection() below. Setting it per checkout instead used to
+        // leave it to chance: an altered session kept CURRENT_SCHEMA when it
+        // returned to the pool and was handed to an unrelated caller, while
+        // a freshly created one had it unset.
+        ...(schema
+            ? {
+                  sessionCallback: (
+                      conn: oracledb.Connection,
+                      _requestedTag: string,
+                      cb: (error?: unknown) => void
+                  ) => {
+                      conn.execute(`ALTER SESSION SET CURRENT_SCHEMA = ${schema}`).then(
+                          () => cb(),
+                          (err) => cb(err)
+                      );
+                  }
+              }
+            : {}),
         ...(configDir ? { configDir } : {})
     });
     pools.set(profile.name, pool);
@@ -47,11 +86,7 @@ export async function getConnection(
     secrets: vscode.SecretStorage
 ): Promise<oracledb.Connection> {
     const pool = await getPool(profile, secrets);
-    const conn = await pool.getConnection();
-    if (profile.defaultSchema) {
-        await conn.execute(`ALTER SESSION SET CURRENT_SCHEMA = ${profile.defaultSchema}`);
-    }
-    return conn;
+    return pool.getConnection();
 }
 
 export async function closePool(name: string): Promise<void> {

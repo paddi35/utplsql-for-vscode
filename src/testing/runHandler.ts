@@ -240,7 +240,18 @@ async function runOneProfile(
         const produceOptions: ProduceOptions = { coverage: options.coverage };
         const produced = buildProduceSql(id, runPaths, produceOptions);
         ctx.output.appendLine(`utPLSQL: produce SQL:\n${produced.sql}`);
-        const producePromise = producerConn.execute(produced.sql);
+        // The producer runs concurrently with the consumer loop below and can
+        // fail long before the await further down is reached — a bad suite
+        // path or a compile error in the block fails almost immediately,
+        // while the consumer is still sitting on its initial timeout. Leaving
+        // the rejection unattached for that window makes it an unhandled
+        // rejection in the extension host, so it is captured here and
+        // re-thrown (into the catch below, which errors the items) once the
+        // loop has finished.
+        let produceError: unknown;
+        const producePromise = producerConn.execute(produced.sql).catch((err: unknown) => {
+            produceError = err;
+        });
 
         for await (const row of streamRows(rs)) {
             ctx.output.appendLine(`utPLSQL: received event itemType='${row.itemType}'`);
@@ -328,6 +339,9 @@ async function runOneProfile(
             }
         }
         await producePromise;
+        if (produceError !== undefined) {
+            throw produceError;
+        }
 
         if (options.coverage && !token.isCancellationRequested) {
             const coverageXml = await consumeNamedReporter(producerConn, options.coverage.reporter, produced.coverageId!);
