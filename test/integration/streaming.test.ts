@@ -53,10 +53,20 @@ describe('realtime event streaming is live, not bundled [integration]', function
         const fastTestIds = ['test_calc_pkg.test_add', 'test_calc_pkg.test_fail_on_purpose', 'test_calc_pkg.test_raises_error', 'test_calc_pkg.test_disabled_case'];
         const fastTestEvents = events.filter((e) => e.event.type === 'post-test' && fastTestIds.includes((e.event as { id: string }).id));
         assert.equal(fastTestEvents.length, fastTestIds.length);
+        // Measured against postSlow rather than preSlow, and as a gap rather
+        // than a strict ordering: test_disabled_case is skipped, so its
+        // post-test event and the pre-test event for test_slow that follows
+        // it routinely land in the same millisecond, which made
+        // `e.elapsedMs < preSlow.elapsedMs` fail roughly two runs in three
+        // even though the order was right. The 2s gap to postSlow is what
+        // actually distinguishes streamed events from bundled ones — if the
+        // cursor delivered everything at the end, these would arrive
+        // alongside postSlow, not ~2s before it.
         for (const e of fastTestEvents) {
+            const leadMs = postSlow!.elapsedMs - e.elapsedMs;
             assert.ok(
-                e.elapsedMs < preSlow!.elapsedMs,
-                `expected ${(e.event as { id: string }).id} to finish before test_slow even started, got elapsedMs=${e.elapsedMs} vs pre-test.test_slow=${preSlow!.elapsedMs}`
+                leadMs >= 1800,
+                `expected ${(e.event as { id: string }).id} to have finished ~2s before test_slow did, got a ${leadMs}ms lead (elapsedMs=${e.elapsedMs}, post-test.test_slow=${postSlow!.elapsedMs})`
             );
         }
     });

@@ -85,11 +85,22 @@ describe('utplsqlDao discovery against a real schema [integration]', function ()
         assert.ok(units.some((u) => u.objectName === 'CALC_PKG' && u.objectType === 'PACKAGE'));
     });
 
-    it('includes() finds test_calc_pkg as a dependent of calc_pkg for coverage scoping', async () => {
+    it('includes() reads dependencies forwards: calc_pkg does not list its own test package', async () => {
+        // The complement of coverage.test.ts's forward-direction check, and a
+        // regression guard for the backwards *_dependencies query described
+        // there: while includes() still queried
+        // referenced_owner/referenced_name, this call returned
+        // TEST_CALC_PKG — that being what references CALC_PKG rather than
+        // what CALC_PKG references. This assertion was written against that
+        // old behaviour and kept asserting it after the query was fixed,
+        // which no CI run ever caught, because the integration job has so
+        // far always timed out during Oracle's first-time DB creation.
+        // The fixture only ever points test_calc_pkg -> calc_pkg, so the
+        // reverse direction must stay free of it.
         const deps = await dao.includes(conn, TEST_OWNER, 'CALC_PKG');
         assert.ok(
-            deps.some((d) => d.owner === TEST_OWNER && d.name === FIXTURE_OWNER_OBJECT),
-            `expected TEST_CALC_PKG among calc_pkg's dependents, got ${JSON.stringify(deps)}`
+            !deps.some((d) => d.name === FIXTURE_OWNER_OBJECT),
+            `expected ${FIXTURE_OWNER_OBJECT} NOT among calc_pkg's dependencies, got ${JSON.stringify(deps)}`
         );
     });
 });

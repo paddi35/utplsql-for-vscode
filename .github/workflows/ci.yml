@@ -28,6 +28,6 @@ jobs:
         run: npx vsce package
 
   # Integration tests run in their own workflow (integration.yml), not on
-  # every push/PR: first-time Oracle DB creation is slow and unpredictable
-  # on GitHub-hosted runners' disks (has taken 15-40+ minutes), which would
-  # otherwise make integration coverage block the normal dev/review loop.
+  # every push/PR: they need a real Oracle instance, and keeping an
+  # infrastructure-dependent suite off the critical path keeps the normal
+  # dev/review loop fast and free of infra flakiness.
