@@ -90,7 +90,9 @@ npm run package        # build a .vsix with vsce
 ```
 
 Integration tests need a real utPLSQL-equipped Oracle instance. A ready-made one is available via
-Docker:
+Docker. The credentials it uses (`ut3` / `oracle`, overridable via `ORACLE_PASSWORD`) are
+throwaway defaults for a local, disposable container — never point this compose file at anything
+reachable from outside your machine:
 
 ```sh
 docker compose up -d --build   # starts gvenzl/oracle-free with utPLSQL installed into schema UT3
@@ -101,6 +103,27 @@ Point the integration tests at a different instance/schema with the `UTPLSQL_IT_
 `UTPLSQL_IT_PASSWORD` and `UTPLSQL_IT_CONNECT_STRING` environment variables (defaults match the
 `docker-compose.yml` setup above).
 
+## Credits
+
+This extension's database protocol layer is a TypeScript port of
+[utPLSQL for SQL Developer](https://github.com/utPLSQL/utPLSQL-SQLDeveloper) (Apache-2.0) — its
+`UtplsqlDao`/`RealtimeReporterDao`, event model, PL/SQL parser and test generator are
+IDE-independent and were reused rather than reinvented. See [NOTICE](./NOTICE) for the full
+attribution.
+
+## Security
+
+- Passwords are stored only in VS Code's `SecretStorage`, never in settings and never written to
+  the output channel.
+- `utplsql.connections` and `utplsql.connections.tnsAdminPath` are **machine-scoped**: a
+  workspace cannot contribute or override them, so opening someone else's repository can't
+  redirect a connection profile (and its stored password) at another host.
+- The extension is disabled in [untrusted workspaces](https://code.visualstudio.com/docs/editor/workspace-trust).
+
+Found a security issue? Please report it via
+[GitHub Security Advisories](https://github.com/paddi35/utplsql-for-vscode/security/advisories/new)
+rather than a public issue.
+
 ## License
 
-[Apache-2.0](./LICENSE)
+[Apache-2.0](./LICENSE) — see also [NOTICE](./NOTICE).

@@ -6,7 +6,7 @@ docker/**
 .gitignore
 .vscodeignore
 .env
-docker-compose.yml
+docker-compose*.yml
 tsconfig.json
 **/*.map
 **/tsconfig.json

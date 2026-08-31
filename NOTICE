@@ -1,0 +1,30 @@
+utPLSQL for VS Code
+Copyright 2026 the utplsql-for-vscode contributors
+
+This product includes software developed as part of the utPLSQL project
+(https://github.com/utPLSQL).
+
+The database protocol layer of this extension (src/db/*, src/model/*,
+src/workspace/plsqlParser.ts and src/generate/testTemplate.ts) is a
+TypeScript port of the corresponding Java code in utPLSQL for SQL Developer
+(https://github.com/utPLSQL/utPLSQL-SQLDeveloper), which is licensed under
+the Apache License, Version 2.0:
+
+    Copyright the utPLSQL project contributors
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+Specifically, the following are derived from that project:
+
+  - UtplsqlDao / RealtimeReporterDao      -> src/db/utplsqlDao.ts, src/db/realtimeDao.ts,
+                                             src/db/reporterDao.ts
+  - model/runner/* event model            -> src/model/events.ts, src/model/eventParser.ts,
+                                             src/model/tree.ts
+  - parser/UtplsqlParser                  -> src/workspace/plsqlParser.ts
+  - oddgen TestTemplate / TestGenerator   -> src/generate/testTemplate.ts
+  - UtplsqlController.dedupPathList /
+    ItemNode.createNonOverlappingSet      -> src/testing/ids.ts

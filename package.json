@@ -9,6 +9,18 @@
     "type": "git",
     "url": "https://github.com/paddi35/utplsql-for-vscode.git"
   },
+  "homepage": "https://github.com/paddi35/utplsql-for-vscode#readme",
+  "bugs": {
+    "url": "https://github.com/paddi35/utplsql-for-vscode/issues"
+  },
+  "keywords": [
+    "utplsql",
+    "oracle",
+    "plsql",
+    "unit testing",
+    "test explorer",
+    "code coverage"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -17,6 +29,15 @@
   ],
   "icon": "icon.png",
   "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Connection profiles name a database this extension connects to with a stored password, so it stays disabled until the workspace is trusted."
+    }
+  },
   "contributes": {
     "languages": [
       {
@@ -45,6 +66,7 @@
       "properties": {
         "utplsql.connections": {
           "type": "array",
+          "scope": "machine",
           "default": [],
           "description": "Verbindungsprofile für utPLSQL. Passwörter werden separat im SecretStorage abgelegt (utplsql.setPassword).",
           "items": {
@@ -76,6 +98,7 @@
         },
         "utplsql.connections.tnsAdminPath": {
           "type": "string",
+          "scope": "machine",
           "default": "",
           "description": "Ordner mit tnsnames.ora (TNS_ADMIN). Wenn leer, wird die Einstellung 'sqldeveloper.connections.tnsConfiguration.path' der Oracle-SQL-Developer-Extension übernommen, falls gesetzt, sonst die Umgebungsvariable TNS_ADMIN. Wird als connectString direkt der Alias eingetragen, löst node-oracledb ihn beim Verbindungsaufbau selbst auf."
         },
@@ -217,13 +240,7 @@
     "typescript": "^5.5.4"
   },
   "dependencies": {
-    "fast-xml-parser": "^4.4.1",
+    "fast-xml-parser": "^5.11.1",
     "oracledb": "^6.6.0"
-  },
-  "allowScripts": {
-    "esbuild@0.23.1": true,
-    "oracledb@6.10.0": true,
-    "@vscode/vsce-sign@2.1.0": true,
-    "keytar@7.9.0": true
   }
 }

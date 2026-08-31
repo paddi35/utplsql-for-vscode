@@ -34,7 +34,15 @@ export async function runPathsAndCollect(
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const produced = buildProduceSql(id, paths, options);
-    const producePromise = producerConn.execute(produced.sql);
+    // Same guard as runOneProfile() in src/testing/runHandler.ts: the producer
+    // runs concurrently with the streaming loop below and can fail well before
+    // the await further down is reached, which would otherwise take down the
+    // mocha process with an unhandled rejection instead of failing the test
+    // that asked for the run.
+    let produceError: unknown;
+    const producePromise = producerConn.execute(produced.sql).catch((err: unknown) => {
+        produceError = err;
+    });
 
     const start = Date.now();
     const events: CollectedEvent[] = [];
@@ -45,6 +53,9 @@ export async function runPathsAndCollect(
         }
     }
     await producePromise;
+    if (produceError !== undefined) {
+        throw produceError;
+    }
 
     let coverageXml: string | undefined;
     if (options.coverage) {
