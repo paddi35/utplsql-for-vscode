@@ -2,7 +2,7 @@
 
 All notable changes to the "utPLSQL for VS Code" extension are documented in this file.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-08-31
 
 Initial version.
 
