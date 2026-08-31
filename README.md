@@ -5,6 +5,16 @@ Studio Code's native Testing API — Test Explorer, gutter run icons, inline fai
 code coverage and reporter export, without needing SQL Developer, PL/SQL Developer or the
 `utPLSQL-cli`.
 
+> [!IMPORTANT]
+> **This is not an official utPLSQL project.** It is an independent, community-built extension
+> that talks to utPLSQL's public database API. It is not affiliated with, endorsed by, or
+> maintained by the [utPLSQL project](https://github.com/utPLSQL/utPLSQL) or its contributors.
+> utPLSQL itself is a separate project under its own licence.
+>
+> Please report anything wrong with **this extension** in
+> [its own issue tracker](https://github.com/paddi35/utplsql-for-vscode/issues) — not to the
+> utPLSQL project, which cannot support it.
+
 ## Features
 
 - **Test Explorer integration** — suites, contexts and tests are discovered straight from the
@@ -120,6 +130,11 @@ This extension's database protocol layer is a TypeScript port of
 `UtplsqlDao`/`RealtimeReporterDao`, event model, PL/SQL parser and test generator are
 IDE-independent and were reused rather than reinvented. See [NOTICE](./NOTICE) for the full
 attribution.
+
+That reuse is what the Apache-2.0 licence permits, and nothing more: it does not make this
+extension part of the utPLSQL project, and the utPLSQL name is used here only to describe what
+the extension integrates with. All thanks for the framework itself go to the utPLSQL
+maintainers — the bugs in this extension are mine.
 
 ## Security
 
