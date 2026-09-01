@@ -68,7 +68,9 @@ entries to `files.associations` yourself for any extensions it doesn't already c
 | `utplsql.setPassword` | (Re-)store a connection's password in `SecretStorage`. |
 | `utplsql.removeConnection` | Remove a connection profile and its stored password. |
 | `utplsql.runTestAtCursor` | Run the suite/test/package at the cursor position. |
-| `utplsql.runWithReporter` | Run the package at the cursor with a chosen output reporter, to the Output channel or a file. |
+| `utplsql.runWithTags` | Run all tests carrying one or more chosen `--%tags(...)` values, for a connection profile. |
+| `utplsql.rebuildAnnotations` | Rebuild utPLSQL's own `--%annotation` cache for a profile's discovered schemas, then refresh the Test Explorer — use this if a newly added/changed `--%test` isn't showing up after a recompile. |
+| `utplsql.runWithReporter` | Run the package at the cursor with a chosen output reporter, to the Output channel or a file. The **Export with Reporter** run profile does the same for an arbitrary Test Explorer selection (one test, a suite, a multi-select), one file per connection profile involved. |
 | `utplsql.generateTest` | Generate a test package skeleton for the unit at the cursor. |
 
 ## Settings
@@ -78,7 +80,14 @@ entries to `files.associations` yourself for any extensions it doesn't already c
 | `utplsql.connections` | `[]` | Connection profiles (`name`, `user`, `connectString`, optional `defaultSchema`). Managed via the commands above; edit directly only if you know what you're doing. |
 | `utplsql.connections.tnsAdminPath` | `""` | Folder containing `tnsnames.ora`. Falls back to the Oracle SQL Developer extension's `sqldeveloper.connections.tnsConfiguration.path`, then `TNS_ADMIN`. If empty and you enter a TNS alias directly as the connect string, `node-oracledb` still resolves it itself at connect time. |
 | `utplsql.discovery.languageIds` | `["sql", "oracle-sql"]` | Language IDs treated as PL/SQL source for discovery and parsing. |
+| `utplsql.run.randomOrder` | `false` | Run tests in a random order (`a_random_test_order`) instead of declaration order, to surface hidden order dependencies between tests. |
+| `utplsql.run.randomOrderSeed` | `0` | Seed for `utplsql.run.randomOrder`. `0` leaves the seed unset (a new one every run, not reproducible); a positive value reproduces the same order every run. |
 | `utplsql.coverage.htmlReport` | `false` | Also render an `ut_coverage_html_reporter` report in a webview alongside the native coverage view. |
+| `utplsql.coverage.excludeObjects` | `[]` | Additional object names (e.g. `UT`, `UT_EXPECTATION`) excluded from the automatically derived coverage scope — e.g. when utPLSQL itself is installed in the same schema as the code under test. |
+| `utplsql.coverage.schemes` / `utplsql.coverage.includeObjects` | `[]` | Fully override the automatically derived `a_coverage_schemes`/`a_include_objects` — useful for objects reached only dynamically (`execute immediate`, triggers), which never show up in `*_dependencies`. Empty = automatic. |
+| `utplsql.coverage.includeSchemaExpr` / `includeObjectExpr` / `excludeSchemaExpr` / `excludeObjectExpr` | `""` | Regex-based coverage scoping (`a_include_schema_expr` etc.), applied on top of the automatic/overridden scope. |
+| `utplsql.coverage.reporter` | `"sonar"` | The native Coverage view always uses `ut_coverage_sonar_reporter`; set to `"cobertura"` to additionally run `ut_coverage_cobertura_reporter` and get offered a save dialog for it after each coverage run. |
+| `utplsql.reporter.clientCharacterSet` / `utplsql.reporter.colorConsole` | `""` / `false` | `a_client_character_set`/`a_color_console` for `utplsql.runWithReporter` and the **Export with Reporter** run profile. |
 | `utplsql.generate.*` | see `package.json` | Test generation options: package/unit prefix/suffix, tests-per-unit, comments, disabled-by-default, suite path, indent. Mirrors utPLSQL's SQL Developer test generator settings. |
 
 ## Known limitations
@@ -89,6 +98,13 @@ entries to `files.associations` yourself for any extensions it doesn't already c
   Running suites that share the same path in two different schemas in a single run can
   misattribute a live event to the wrong schema's test item — the same known limitation Oracle
   SQL Developer's utPLSQL integration has.
+- **`DATE` columns in a `sys_refcursor` comparison.** Without `ut.set_nls`/`ut.reset_nls` around
+  the comparison, `DATE` values are compared using the session's default NLS date format instead
+  of as a proper date-time value. `ut.set_nls` must stay active through both `OPEN`s *and* the
+  `to_equal`/`to_contain` call itself — calling `ut.reset_nls` any earlier raises `ORA-01861`
+  (confirmed against a live utPLSQL 3.2.3 instance; `ut.pks`'s own doc comment only says
+  `ut.reset_nls` must run "after refcursor is open", which is necessary but not sufficient). See
+  the `ut-nls-cursor` snippet for the verified sequence.
 
 ## Development
 
