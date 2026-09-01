@@ -28,6 +28,10 @@ export class MetaStore {
             }
         }
     }
+
+    valuesForProfile(profile: string): ItemMeta[] {
+        return [...this.byId.values()].filter((m) => m.profile === profile);
+    }
 }
 
 export interface UtplsqlContext {

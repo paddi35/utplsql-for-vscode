@@ -127,6 +127,43 @@ export function parseDisabledFlag(value: unknown): boolean {
     return s === 'Y' || s === 'true' || s === '1';
 }
 
+/** TestItem.description text for a --%disabled row, or undefined for an enabled one. */
+export function describeDisabled(row: Pick<SuiteInfoRow, 'disabledFlag' | 'disabledReason'>): string | undefined {
+    if (!row.disabledFlag) {
+        return undefined;
+    }
+    return row.disabledReason ? `disabled: ${row.disabledReason}` : 'disabled';
+}
+
+/**
+ * Error message for running tests against a utPLSQL version too old for the
+ * real-time reporter, or undefined when the version is new enough. Kept
+ * separate from the VERSION_GET_SUITES_INFO gate in fetchSuiteRows
+ * (controller.ts) — discovery and running have different minimum versions,
+ * and reaching this gate at all means discovery's own (older) gate already
+ * passed, so this failure previously surfaced only as a raw ORA error deep
+ * inside the produce/consume protocol instead of an actionable message.
+ */
+export function checkRealtimeReporterSupport(version: { raw: string; normalized: number }, profile: string): string | undefined {
+    if (version.normalized >= VERSION_REALTIME_REPORTER) {
+        return undefined;
+    }
+    return `utPLSQL ${version.raw} is too old to run tests (needs >= 3.1.4 for the real-time reporter). Upgrade utPLSQL in '${profile}' first.`;
+}
+
+/** Distinct --%tags(...) values across a set of suite rows, sorted for a stable QuickPick order. */
+export function collectTags(rows: Array<Pick<SuiteInfoRow, 'tags'>>): string[] {
+    const tags = new Set<string>();
+    for (const row of rows) {
+        (row.tags ?? '')
+            .split(',')
+            .map((t) => t.trim())
+            .filter((t) => t.length > 0)
+            .forEach((t) => tags.add(t));
+    }
+    return [...tags].sort();
+}
+
 export async function getSuitesInfo(conn: Connection, owner?: string, pkg?: string): Promise<SuiteInfoRow[]> {
     const result = await conn.execute<Record<string, unknown>>(
         `SELECT object_owner, object_name, item_name, item_description, item_type,
@@ -219,6 +256,18 @@ export async function getObjectSource(conn: Connection, owner: string, name: str
         { owner, name, type }
     );
     return (result.rows ?? []).map((r) => String(r.TEXT ?? '')).join('');
+}
+
+/**
+ * ut_runner.rebuild_annotation_cache(owner, type) — forces a re-parse of
+ * --%annotations for the given schema. Needed after a recompile: utPLSQL's
+ * own annotation cache can otherwise still reflect the previous version of
+ * a package, so a newly added --%test never shows up no matter how many
+ * times the extension's own suitesCache is cleared (see controller.ts's
+ * refreshHandler, which only clears *this extension's* cache).
+ */
+export async function rebuildAnnotationCache(conn: Connection, owner: string): Promise<void> {
+    await conn.execute(`BEGIN ut_runner.rebuild_annotation_cache(upper(:owner)); END;`, { owner });
 }
 
 export async function getReportersList(conn: Connection): Promise<ReporterInfo[]> {

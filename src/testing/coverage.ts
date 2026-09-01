@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { Connection } from 'oracledb';
 import { XMLParser } from 'fast-xml-parser';
 import { getPool } from '../db/pool';
 import { getProfile } from '../db/connections';
@@ -6,7 +7,7 @@ import * as dao from '../db/utplsqlDao';
 import { CoverageOptions } from '../db/realtimeDao';
 import { UtplsqlContext } from './model';
 import { virtualSourceUri } from '../workspace/virtualSource';
-import { groupRequest, runOneProfile } from './runHandler';
+import { groupRequest, runOneProfile, readRandomOrderConfig } from './runHandler';
 
 const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
 
@@ -69,6 +70,7 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
     const run = ctx.controller.createTestRun(request);
     const detailByUri = new Map<string, vscode.StatementCoverage[]>();
     detailedCoverage.set(run, detailByUri);
+    const { randomOrder, randomOrderSeed } = readRandomOrderConfig();
     try {
         const grouped = groupRequest(ctx, request);
         for (const [profile, group] of grouped) {
@@ -78,7 +80,9 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
             }
             const built = await buildCoverageOptions(ctx, profile, group.items);
             const result = await runOneProfile(ctx, run, profile, group.items, group.paths, token, {
-                coverage: built?.options
+                coverage: built?.options,
+                randomOrder,
+                randomOrderSeed
             });
             if (result.coverageXml) {
                 applyCoverage(ctx, run, detailByUri, result.coverageXml, built?.pathToUri ?? new Map());
@@ -86,10 +90,31 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
             if (result.htmlReport && vscode.workspace.getConfiguration('utplsql').get<boolean>('coverage.htmlReport')) {
                 showHtmlReport(result.htmlReport);
             }
+            if (result.additionalCoverageXml) {
+                await offerAdditionalCoverageFile(ctx, result.additionalCoverageXml);
+            }
         }
     } finally {
         run.end();
     }
+}
+
+/**
+ * utplsql.coverage.reporter = 'cobertura' runs ut_coverage_cobertura_reporter
+ * alongside the sonar reporter the native Coverage view needs (see
+ * CoverageOptions.additionalReporter) — offered as a save-to-file here,
+ * since there is no native VS Code view for Cobertura XML to feed instead.
+ */
+async function offerAdditionalCoverageFile(ctx: UtplsqlContext, xml: string): Promise<void> {
+    const uri = await vscode.window.showSaveDialog({
+        filters: { 'Cobertura XML': ['xml'] },
+        saveLabel: 'Save Cobertura Coverage Report'
+    });
+    if (!uri) {
+        return;
+    }
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(xml, 'utf8'));
+    ctx.output.appendLine(`utPLSQL: Cobertura coverage report saved to ${uri.fsPath}`);
 }
 
 interface BuiltCoverage {
@@ -97,16 +122,92 @@ interface BuiltCoverage {
     pathToUri: Map<string, vscode.Uri>;
 }
 
+/**
+ * Resolves owner.name pairs to source-file-mapping entries: a local
+ * workspace file where the sourceIndex has one, otherwise a virtual
+ * DB-source fallback. The DB fallback's object-type lookup is batched one
+ * query per owner (via dao.getPackageObjectTypes, the same helper
+ * controller.ts's resolveVirtualTypes uses) instead of one query per object:
+ * a single oracledb Connection doesn't support concurrent execute() calls,
+ * so Promise.all-ing a per-object dao.getPackageObjectType isn't a safe way
+ * to avoid N sequential round trips — batching the bind list is. This
+ * matters most for a project with no local source at all (the DB is the
+ * sole source of truth), where every object previously fell through to its
+ * own round trip.
+ */
+async function resolveFileMappings(
+    ctx: UtplsqlContext,
+    scopeConn: Connection,
+    profile: string,
+    objects: Iterable<{ owner: string; name: string }>
+): Promise<{ fileMappings: CoverageOptions['fileMappings']; pathToUri: Map<string, vscode.Uri> }> {
+    const fileMappings: CoverageOptions['fileMappings'] = [];
+    const pathToUri = new Map<string, vscode.Uri>();
+
+    const localByKey = new Map<string, { mapping: CoverageOptions['fileMappings'][number]; uri: vscode.Uri }>();
+    const needsLookup = new Map<string, Set<string>>(); // owner -> object names still needing a DB round trip
+    const uniqueObjects = [...objects];
+
+    for (const { owner, name } of uniqueObjects) {
+        const loc = ctx.sourceIndex.lookupPackage(name);
+        if (loc) {
+            const file = vscode.workspace.asRelativePath(loc.uri, false).replace(/\\/g, '/');
+            ctx.output.appendLine(`utPLSQL: coverage — mapped '${owner}.${name}' to local file '${file}'`);
+            localByKey.set(`${owner}.${name}`, { mapping: { file, owner, name, type: loc.isBody ? 'PACKAGE BODY' : 'PACKAGE' }, uri: loc.uri });
+            continue;
+        }
+        const names = needsLookup.get(owner) ?? new Set<string>();
+        names.add(name);
+        needsLookup.set(owner, names);
+    }
+
+    // No local workspace file for these (e.g. this project keeps the DB as
+    // the sole source of truth) — fall back to a virtual, DB-backed document
+    // instead of dropping them from coverage entirely, so native gutters/the
+    // Test Coverage panel still get something to point at.
+    const dbTypeByKey = new Map<string, 'PACKAGE BODY' | 'PACKAGE'>();
+    for (const [owner, names] of needsLookup) {
+        const types = await dao.getPackageObjectTypes(scopeConn, owner, [...names]);
+        types.forEach((type, objectName) => dbTypeByKey.set(`${owner}.${objectName}`, type));
+    }
+
+    for (const { owner, name } of uniqueObjects) {
+        const key = `${owner}.${name}`;
+        const local = localByKey.get(key);
+        if (local) {
+            fileMappings.push(local.mapping);
+            pathToUri.set(local.mapping.file, local.uri);
+            continue;
+        }
+        const objType = dbTypeByKey.get(`${owner}.${name.toUpperCase()}`);
+        if (!objType) {
+            ctx.output.appendLine(
+                `utPLSQL: coverage — '${owner}.${name}' has neither a local file nor a PACKAGE/PACKAGE BODY in the database, excluding it from the coverage file mappings`
+            );
+            continue;
+        }
+        const isBody = objType === 'PACKAGE BODY';
+        const uri = virtualSourceUri(profile, owner, name, isBody);
+        const file = `${owner}/${name}.${isBody ? 'pkb' : 'pks'}`;
+        ctx.output.appendLine(`utPLSQL: coverage — no local source file for '${owner}.${name}', mapped to virtual DB source '${file}'`);
+        fileMappings.push({ file, owner, name, type: objType });
+        pathToUri.set(file, uri);
+    }
+
+    return { fileMappings, pathToUri };
+}
+
 async function buildCoverageOptions(ctx: UtplsqlContext, profile: string, items: vscode.TestItem[]): Promise<BuiltCoverage | undefined> {
     const cfg = getProfile(profile);
     if (!cfg) {
         return undefined;
     }
+    const coverageCfg = vscode.workspace.getConfiguration('utplsql.coverage');
     const pool = await getPool(cfg, ctx.secrets, 1);
     const scopeConn = await pool.getConnection();
     try {
         const owners = new Set<string>();
-        const testObjectNames = new Set<string>();
+        const testObjects = new Map<string, { owner: string; name: string }>();
         const includeObjects = new Map<string, { owner: string; name: string }>();
 
         for (const item of items) {
@@ -115,7 +216,7 @@ async function buildCoverageOptions(ctx: UtplsqlContext, profile: string, items:
                 continue;
             }
             owners.add(meta.owner);
-            testObjectNames.add(meta.row.objectName);
+            testObjects.set(`${meta.owner}.${meta.row.objectName}`, { owner: meta.owner, name: meta.row.objectName });
             const deps = await dao.includes(scopeConn, meta.owner, meta.row.objectName);
             deps.forEach((d) => includeObjects.set(`${d.owner}.${d.name}`, d));
         }
@@ -127,58 +228,52 @@ async function buildCoverageOptions(ctx: UtplsqlContext, profile: string, items:
         // always show up as a direct dependency. There is no reliable
         // signal in *_dependencies to filter those out automatically, so
         // this is a user-maintained denylist instead of a guessed one.
-        const userExcluded = new Set(
-            vscode.workspace
-                .getConfiguration('utplsql')
-                .get<string[]>('coverage.excludeObjects', [])
-                .map((n) => n.toUpperCase())
-        );
+        const userExcluded = new Set(coverageCfg.get<string[]>('excludeObjects', []).map((n) => n.toUpperCase()));
         for (const [key, { name }] of includeObjects) {
             if (userExcluded.has(name)) {
                 includeObjects.delete(key);
             }
         }
 
-        const fileMappings: CoverageOptions['fileMappings'] = [];
-        const pathToUri = new Map<string, vscode.Uri>();
-        for (const { owner, name } of includeObjects.values()) {
-            const loc = ctx.sourceIndex.lookupPackage(name);
-            if (loc) {
-                const file = vscode.workspace.asRelativePath(loc.uri, false).replace(/\\/g, '/');
-                ctx.output.appendLine(`utPLSQL: coverage — mapped '${owner}.${name}' to local file '${file}'`);
-                fileMappings.push({ file, owner, name, type: loc.isBody ? 'PACKAGE BODY' : 'PACKAGE' });
-                pathToUri.set(file, loc.uri);
-                continue;
+        // utplsql.coverage.schemes/includeObjects: an explicit override
+        // replaces the automatically derived scope entirely — dynamically
+        // invoked objects (execute immediate, triggers) never show up in
+        // *_dependencies, so there is no way to include them other than
+        // naming them here.
+        const schemesOverride = coverageCfg.get<string[]>('schemes', []);
+        const includeObjectsOverride = coverageCfg.get<string[]>('includeObjects', []);
+        const schemes = schemesOverride.length > 0 ? schemesOverride.map((s) => s.toUpperCase()) : [...owners];
+        if (includeObjectsOverride.length > 0) {
+            includeObjects.clear();
+            for (const owner of schemes) {
+                for (const name of includeObjectsOverride) {
+                    includeObjects.set(`${owner}.${name.toUpperCase()}`, { owner, name: name.toUpperCase() });
+                }
             }
-
-            // No local workspace file (e.g. this project keeps the DB as
-            // the sole source of truth) — fall back to a virtual,
-            // DB-backed document instead of dropping the object from
-            // coverage entirely, so native gutters/the Test Coverage panel
-            // still get something to point at.
-            const objType = await dao.getPackageObjectType(scopeConn, owner, name);
-            if (!objType) {
-                ctx.output.appendLine(
-                    `utPLSQL: coverage — '${owner}.${name}' has neither a local file nor a PACKAGE/PACKAGE BODY in the database, excluding it from a_source_file_mappings`
-                );
-                continue;
-            }
-            const isBody = objType === 'PACKAGE BODY';
-            const uri = virtualSourceUri(profile, owner, name, isBody);
-            const file = `${owner}/${name}.${isBody ? 'pkb' : 'pks'}`;
-            ctx.output.appendLine(`utPLSQL: coverage — no local source file for '${owner}.${name}', mapped to virtual DB source '${file}'`);
-            fileMappings.push({ file, owner, name, type: objType });
-            pathToUri.set(file, uri);
         }
+
+        const { fileMappings, pathToUri } = await resolveFileMappings(ctx, scopeConn, profile, includeObjects.values());
+        // The test packages themselves are reported via a_test_file_mappings
+        // instead of a_exclude_objects: utPLSQL distinguishes "this file is
+        // test code" from "this file was not measured at all", which
+        // SonarQube/Cobertura consumers treat differently.
+        const { fileMappings: testFileMappings } = await resolveFileMappings(ctx, scopeConn, profile, testObjects.values());
+
+        const additionalReporterSetting = coverageCfg.get<'sonar' | 'cobertura'>('reporter', 'sonar');
 
         return {
             options: {
                 reporter: 'ut_coverage_sonar_reporter',
-                schemes: [...owners],
+                schemes,
                 includeObjects: [...includeObjects.values()].map((v) => v.name),
-                excludeObjects: [...testObjectNames],
                 fileMappings,
-                htmlReport: vscode.workspace.getConfiguration('utplsql').get<boolean>('coverage.htmlReport', false)
+                testFileMappings,
+                htmlReport: coverageCfg.get<boolean>('htmlReport', false),
+                additionalReporter: additionalReporterSetting === 'cobertura' ? 'ut_coverage_cobertura_reporter' : undefined,
+                includeSchemaExpr: coverageCfg.get<string>('includeSchemaExpr', '') || undefined,
+                includeObjectExpr: coverageCfg.get<string>('includeObjectExpr', '') || undefined,
+                excludeSchemaExpr: coverageCfg.get<string>('excludeSchemaExpr', '') || undefined,
+                excludeObjectExpr: coverageCfg.get<string>('excludeObjectExpr', '') || undefined
             },
             pathToUri
         };

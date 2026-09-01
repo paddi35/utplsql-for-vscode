@@ -8,7 +8,22 @@ export interface CoverageOptions {
     excludeObjects?: string[];
     /** { file: workspace-relative path, owner, name, type } */
     fileMappings: Array<{ file: string; owner: string; name: string; type: string }>;
+    /** a_test_file_mappings — objects to report as test files rather than source under coverage. */
+    testFileMappings?: Array<{ file: string; owner: string; name: string; type: string }>;
     htmlReport?: boolean;
+    /**
+     * Runs a second coverage reporter of this type alongside `reporter`
+     * (same run, same scope, its own reporter id) instead of replacing it —
+     * `reporter` is what the native VS Code Coverage view consumes, so it
+     * always has to be ut_coverage_sonar_reporter; this is purely an
+     * additional export format.
+     */
+    additionalReporter?: 'ut_coverage_cobertura_reporter';
+    /** a_include_schema_expr/a_include_object_expr/a_exclude_schema_expr/a_exclude_object_expr — regex scoping, on top of (not instead of) schemes/includeObjects/excludeObjects. */
+    includeSchemaExpr?: string;
+    includeObjectExpr?: string;
+    excludeSchemaExpr?: string;
+    excludeObjectExpr?: string;
 }
 
 export interface EventRow {
@@ -64,6 +79,7 @@ interface ReportersClause {
     inits: string;
     coverageId?: string;
     htmlId?: string;
+    additionalCoverageId?: string;
 }
 
 /**
@@ -75,6 +91,17 @@ interface ReportersClause {
  * Each additional reporter therefore needs its own freshly generated
  * 32-hex id instead of a string suffix on the primary one.
  */
+function fileMappingsLiteral(mappings: Array<{ file: string; owner: string; name: string; type: string }>): string {
+    return mappings
+        .map(
+            (m) =>
+                `ut_file_mapping(${quoteLiteral(m.file)}, ${quoteLiteral(
+                    validateIdentifier(m.owner, 'owner')
+                )}, ${quoteLiteral(validateIdentifier(m.name, 'object name'))}, ${quoteLiteral(m.type)})`
+        )
+        .join(',\n            ');
+}
+
 function reportersClause(id: string, coverage?: CoverageOptions): ReportersClause {
     const rt = `l_rt_rep`;
     let decls = `${rt} ut_realtime_reporter := ut_realtime_reporter();`;
@@ -82,21 +109,17 @@ function reportersClause(id: string, coverage?: CoverageOptions): ReportersClaus
     let reporters = rt;
     let coverageId: string | undefined;
     let htmlId: string | undefined;
+    let additionalCoverageId: string | undefined;
     if (coverage) {
         coverageId = newReporterId();
         const cov = `l_cov_rep`;
-        const mappings = coverage.fileMappings
-            .map(
-                (m) =>
-                    `ut_file_mapping(${quoteLiteral(m.file)}, ${quoteLiteral(
-                        validateIdentifier(m.owner, 'owner')
-                    )}, ${quoteLiteral(validateIdentifier(m.name, 'object name'))}, ${quoteLiteral(m.type)})`
-            )
-            .join(',\n            ');
         decls += `\n   ${cov} ${coverage.reporter} := ${coverage.reporter}();`;
-        decls += `\n   l_source_mappings ut_file_mappings := ut_file_mappings(\n            ${mappings}\n         );`;
+        decls += `\n   l_source_mappings ut_file_mappings := ut_file_mappings(\n            ${fileMappingsLiteral(coverage.fileMappings)}\n         );`;
         inits += `\n   ${cov}.set_reporter_id('${coverageId}');`;
         reporters += `, ${cov}`;
+        if (coverage.testFileMappings && coverage.testFileMappings.length > 0) {
+            decls += `\n   l_test_mappings ut_file_mappings := ut_file_mappings(\n            ${fileMappingsLiteral(coverage.testFileMappings)}\n         );`;
+        }
         if (coverage.includeObjects) {
             coverage.includeObjects.forEach((o) => validateIdentifier(o, 'include object'));
         }
@@ -110,8 +133,15 @@ function reportersClause(id: string, coverage?: CoverageOptions): ReportersClaus
             inits += `\n   ${html}.set_reporter_id('${htmlId}');`;
             reporters += `, ${html}`;
         }
+        if (coverage.additionalReporter && coverage.additionalReporter !== coverage.reporter) {
+            additionalCoverageId = newReporterId();
+            const cov2 = `l_cov_rep2`;
+            decls += `\n   ${cov2} ${coverage.additionalReporter} := ${coverage.additionalReporter}();`;
+            inits += `\n   ${cov2}.set_reporter_id('${additionalCoverageId}');`;
+            reporters += `, ${cov2}`;
+        }
     }
-    return { reporters, decls, inits, coverageId, htmlId };
+    return { reporters, decls, inits, coverageId, htmlId, additionalCoverageId };
 }
 
 export interface ProduceOptions {
@@ -127,15 +157,27 @@ export interface ProduceSql {
     coverageId?: string;
     /** Reporter id to pass to consumeNamedReporter() for ut_coverage_html_reporter, when options.coverage.htmlReport was set. */
     htmlId?: string;
+    /** Reporter id to pass to consumeNamedReporter() for options.coverage.additionalReporter, when set. */
+    additionalCoverageId?: string;
 }
 
 export function buildProduceSql(id: string, paths: string[], options: ProduceOptions = {}): ProduceSql {
-    const { reporters, decls, inits, coverageId, htmlId } = reportersClause(id, options.coverage);
-    const tagsBind = options.tags && options.tags.length > 0 ? `\n      a_tags => ${varchar2List(options.tags)},` : '';
+    const { reporters, decls, inits, coverageId, htmlId, additionalCoverageId } = reportersClause(id, options.coverage);
+    // a_tags is a plain varchar2 (comma-separated tag list, OR-matched),
+    // not a ut_varchar2_list — unlike a_paths/a_include_objects/etc. Passing
+    // ut_varchar2_list(...) here compiles to a PLS-00306 wrong-argument-type
+    // error, which the producer connection never surfaces to the consumer:
+    // the realtime reporter never gets initialized, so the consumer just
+    // sits on its initial timeout instead of failing fast (caught via a live
+    // utPLSQL 3.2.3 instance, see test/integration/runOptions.test.ts).
+    const tagsBind = options.tags && options.tags.length > 0 ? `\n      a_tags => ${quoteLiteral(options.tags.join(','))},` : '';
     const randomOrder = options.randomOrder ? 'true' : 'false';
     const seedBind = options.seed !== undefined ? String(options.seed) : 'null';
     const coverageArgs = options.coverage
         ? `,\n      a_source_file_mappings => l_source_mappings` +
+          (options.coverage.testFileMappings && options.coverage.testFileMappings.length > 0
+              ? `,\n      a_test_file_mappings => l_test_mappings`
+              : '') +
           (options.coverage.schemes && options.coverage.schemes.length > 0
               ? `,\n      a_coverage_schemes => ${varchar2List(options.coverage.schemes)}`
               : '') +
@@ -144,7 +186,15 @@ export function buildProduceSql(id: string, paths: string[], options: ProduceOpt
               : '') +
           (options.coverage.excludeObjects && options.coverage.excludeObjects.length > 0
               ? `,\n      a_exclude_objects => ${varchar2List(options.coverage.excludeObjects)}`
-              : '')
+              : '') +
+          // Regex scoping (a_*_expr): plain varchar2, quoted as a literal like
+          // a_tags — NOT validateIdentifier'd, since a real regex routinely
+          // contains characters ([A-Z_]%, |, etc.) that a bare identifier
+          // never would.
+          (options.coverage.includeSchemaExpr ? `,\n      a_include_schema_expr => ${quoteLiteral(options.coverage.includeSchemaExpr)}` : '') +
+          (options.coverage.includeObjectExpr ? `,\n      a_include_object_expr => ${quoteLiteral(options.coverage.includeObjectExpr)}` : '') +
+          (options.coverage.excludeSchemaExpr ? `,\n      a_exclude_schema_expr => ${quoteLiteral(options.coverage.excludeSchemaExpr)}` : '') +
+          (options.coverage.excludeObjectExpr ? `,\n      a_exclude_object_expr => ${quoteLiteral(options.coverage.excludeObjectExpr)}` : '')
         : '';
     const sql = `DECLARE
    ${decls}
@@ -159,7 +209,7 @@ BEGIN
    );
    sys.dbms_output.disable;
 END;`;
-    return { sql, coverageId, htmlId };
+    return { sql, coverageId, htmlId, additionalCoverageId };
 }
 
 export async function produceReport(conn: Connection, id: string, paths: string[], options: ProduceOptions = {}): Promise<ProduceSql> {
