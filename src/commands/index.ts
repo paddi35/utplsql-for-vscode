@@ -5,6 +5,8 @@ import * as dao from '../db/utplsqlDao';
 import { runWithReporter as runWithReporterDao } from '../db/reporterDao';
 import { UtplsqlContext } from '../testing/model';
 import { runTests } from '../testing/runHandler';
+import { parseId, rootId } from '../testing/ids';
+import { readReporterOptions } from '../testing/reporterConfig';
 import { generateTestPackage, readGenerateOptions } from '../generate/testTemplate';
 import { matchesConfiguredLanguage } from '../workspace/languageIndex';
 import { listTnsAliases, resolveTnsAdminDir } from '../db/tnsnames';
@@ -186,6 +188,88 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             }
         }),
 
+        vscode.commands.registerCommand('utplsql.runWithTags', async () => {
+            const profile = await pickProfile('Select connection profile');
+            if (!profile) {
+                return;
+            }
+            const root = ctx.controller.items.get(rootId(profile));
+            if (!root || root.children.size === 0) {
+                vscode.window.showErrorMessage(
+                    `utPLSQL: no tests discovered yet for '${profile}'. Expand it in the Testing view (or run "Refresh Tests") first.`
+                );
+                return;
+            }
+            const tags = dao.collectTags(
+                ctx.meta
+                    .valuesForProfile(profile)
+                    .map((m) => m.row)
+                    .filter((row): row is NonNullable<typeof row> => row !== undefined)
+            );
+            if (tags.length === 0) {
+                vscode.window.showErrorMessage(`utPLSQL: no '--%tags(...)' annotations found among the discovered tests for '${profile}'.`);
+                return;
+            }
+            const selected = await vscode.window.showQuickPick(tags, {
+                title: `Run tests tagged in '${profile}'`,
+                canPickMany: true,
+                placeHolder: 'Select one or more tags — tests are run if they carry any of them'
+            });
+            if (!selected || selected.length === 0) {
+                return;
+            }
+            const request = new vscode.TestRunRequest([root]);
+            const tokenSource = new vscode.CancellationTokenSource();
+            try {
+                await runTests(ctx, request, tokenSource.token, { tags: selected });
+            } finally {
+                tokenSource.dispose();
+            }
+        }),
+
+        vscode.commands.registerCommand('utplsql.rebuildAnnotations', async () => {
+            const profile = await pickProfile('Select connection profile');
+            if (!profile) {
+                return;
+            }
+            const cfg = getProfile(profile);
+            if (!cfg) {
+                return;
+            }
+            // Prefer the schemas already discovered for this profile (a
+            // connection can surface suites owned by more than one schema);
+            // fall back to the profile's own default schema when nothing has
+            // been discovered yet.
+            const owners = new Set<string>();
+            const root = ctx.controller.items.get(rootId(profile));
+            root?.children.forEach((schemaItem) => {
+                const parsed = parseId(schemaItem.id);
+                if (parsed.kind === 'schema') {
+                    owners.add(parsed.owner);
+                }
+            });
+            if (owners.size === 0) {
+                owners.add((cfg.defaultSchema ?? cfg.user).toUpperCase());
+            }
+
+            const pool = await getPool(cfg, extCtx.secrets, 0);
+            const conn = await pool.getConnection();
+            try {
+                for (const owner of owners) {
+                    await dao.rebuildAnnotationCache(conn, owner);
+                }
+            } finally {
+                await conn.close();
+            }
+            ctx.output.appendLine(`utPLSQL: rebuilt annotation cache for '${profile}' (${[...owners].sort().join(', ')})`);
+            const tokenSource = new vscode.CancellationTokenSource();
+            try {
+                await ctx.controller.refreshHandler?.(tokenSource.token);
+            } finally {
+                tokenSource.dispose();
+            }
+        }),
+
         vscode.commands.registerCommand('utplsql.runWithReporter', async () => {
             const resolved = await resolveAtCursor(ctx);
             if (!resolved) {
@@ -220,7 +304,7 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             const consumerConn = await pool.getConnection();
             let output: string;
             try {
-                output = await runWithReporterDao(producerConn, consumerConn, reporterName, [runPath]);
+                output = await runWithReporterDao(producerConn, consumerConn, reporterName, [runPath], readReporterOptions());
             } finally {
                 await producerConn.close();
                 await consumerConn.close();

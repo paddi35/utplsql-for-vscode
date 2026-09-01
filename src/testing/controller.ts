@@ -10,6 +10,8 @@ import { MetaStore, UtplsqlContext } from './model';
 import { runTests } from './runHandler';
 import { runCoverage, loadDetailedCoverage } from './coverage';
 import { measure, setPerfOutputChannel } from '../perf';
+import { runReporterExport } from './reporterProfile';
+import { getCachedVersion, clearVersionCache } from '../db/versionCache';
 
 const suitesCache = new Map<string, SuiteInfoRow[]>();
 
@@ -63,7 +65,7 @@ async function fetchSuiteRows(profile: string): Promise<SuiteInfoRow[]> {
     }
     const conn = await getConnection(cfg, ctxSecrets());
     try {
-        const version = await dao.getVersion(conn);
+        const version = await getCachedVersion(conn, profile);
         if (version.normalized < dao.VERSION_GET_SUITES_INFO) {
             throw new Error(
                 `utPLSQL ${version.raw} is too old (needs >= 3.1.3 for get_suites_info). Extension stays inactive for '${profile}'.`
@@ -182,11 +184,21 @@ async function materializeLevel(
         if (location) {
             item.range = location.range;
         }
-        item.tags = (row.tags ?? '')
+        const tags = (row.tags ?? '')
             .split(',')
             .map((t) => t.trim())
             .filter((t) => t.length > 0)
             .map((t) => new vscode.TestTag(t));
+        const disabledDescription = dao.describeDisabled(row);
+        if (disabledDescription) {
+            // --%disabled: the run already reports these as 'skipped' (see
+            // escalateStatus), but nothing distinguished them from an
+            // enabled test *before* running — this is the only signal that
+            // a "failure" is actually just a disabled test never having run.
+            item.description = disabledDescription;
+            tags.push(new vscode.TestTag('disabled'));
+        }
+        item.tags = tags;
         item.canResolveChildren = index.has(row.path);
         meta.set(id, { profile, owner, suitepath: row.path, row });
         parentItem.children.add(item);
@@ -235,6 +247,8 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
             try {
                 const conn = await getConnection(cfg, extCtx.secrets);
                 try {
+                    const version = await getCachedVersion(conn, parsed.profile);
+                    item.description = version.raw;
                     const owners = new Set<string>();
                     const primary = (cfg.defaultSchema ?? cfg.user).toUpperCase();
                     if (await dao.hasSuites(conn, primary)) {
@@ -287,6 +301,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
     controller.refreshHandler = async () => {
         suitesCache.clear();
         childrenIndexCache.clear();
+        clearVersionCache();
         controller.items.forEach((root) => meta.deleteForProfile(parseId(root.id).profile));
         controller.items.replace([]);
         await controller.resolveHandler?.(undefined);
@@ -307,7 +322,14 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
     );
     coverageProfile.loadDetailedCoverage = loadDetailedCoverage;
 
-    extCtx.subscriptions.push(controller, output, runProfile, coverageProfile);
+    const reporterExportProfile = controller.createRunProfile(
+        'Export with Reporter',
+        vscode.TestRunProfileKind.Run,
+        (request, token) => runReporterExport(ctx, request, token),
+        false
+    );
+
+    extCtx.subscriptions.push(controller, output, runProfile, coverageProfile, reporterExportProfile);
 
     return ctx;
 }

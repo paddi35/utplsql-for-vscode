@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import { Connection } from 'oracledb';
 import { getProfile } from '../db/connections';
 import { getPool, recyclePool } from '../db/pool';
+import * as dao from '../db/utplsqlDao';
+import { getCachedVersion } from '../db/versionCache';
 import {
     CoverageOptions,
     ProduceOptions,
@@ -188,11 +190,15 @@ function applyPostCounters(
 
 interface RunOneProfileOptions {
     coverage?: CoverageOptions;
+    tags?: string[];
+    randomOrder?: boolean;
+    randomOrderSeed?: number;
 }
 
 export interface RunOneProfileResult {
     coverageXml?: string;
     htmlReport?: string;
+    additionalCoverageXml?: string;
 }
 
 async function runOneProfile(
@@ -223,8 +229,47 @@ async function runOneProfile(
     }
 
     const pool = await getPool(cfg, ctx.secrets, options.coverage ? 1 : 0);
-    const producerConn = await pool.getConnection();
-    const consumerConn = await pool.getConnection();
+
+    // Connection acquisition and the version round-trip below run before the
+    // main try/finally (which needs consumerConn to already exist to set up
+    // its cancellation handler). Guarded explicitly here instead: previously
+    // an exception in this window (pool exhaustion, a transient ORA error
+    // from ut.version()) propagated out of runOneProfile entirely uncaught —
+    // every already-enqueued item stayed stuck in the "enqueued" state
+    // forever, runTests's for-loop over the remaining profiles aborted, and
+    // a successfully opened producerConn was never closed.
+    let producerConn: Connection;
+    try {
+        producerConn = await pool.getConnection();
+    } catch (err) {
+        items.forEach((i) => run.errored(i, new vscode.TestMessage(String(err))));
+        return {};
+    }
+
+    let version: { raw: string; normalized: number };
+    try {
+        version = await getCachedVersion(producerConn, profile);
+    } catch (err) {
+        items.forEach((i) => run.errored(i, new vscode.TestMessage(String(err))));
+        await safeClose(producerConn);
+        return {};
+    }
+    const unsupported = dao.checkRealtimeReporterSupport(version, profile);
+    if (unsupported) {
+        items.forEach((i) => run.errored(i, new vscode.TestMessage(unsupported)));
+        ctx.output.appendLine(`utPLSQL: ${unsupported}`);
+        await safeClose(producerConn);
+        return {};
+    }
+
+    let consumerConn: Connection;
+    try {
+        consumerConn = await pool.getConnection();
+    } catch (err) {
+        items.forEach((i) => run.errored(i, new vscode.TestMessage(String(err))));
+        await safeClose(producerConn);
+        return {};
+    }
     const id = newReporterId();
     const runPaths = paths.map((p) => `${p.owner}:${p.suitepath}`);
     ctx.output.appendLine(`utPLSQL: run paths for '${profile}' = ${JSON.stringify(runPaths)} (from ${items.length} selected item(s): ${items.map((i) => i.id).join(', ')})`);
@@ -237,6 +282,15 @@ async function runOneProfile(
 
     const activeItems = new Map<string, vscode.TestItem>();
     const eventCounter = new PerfCounter();
+    // Every item in `items` was run.enqueued() above, but a_tags/a_paths
+    // scoping (see buildProduceSql) can mean the server only ever reports
+    // events for a subset of them — e.g. utplsql.runWithTags enqueues every
+    // suite/test under the whole connection profile, while a_tags narrows
+    // what actually executes to the handful of tests carrying the chosen
+    // tag. Tracking which items received a terminal status here lets the
+    // rest be explicitly marked skipped afterward, instead of being left to
+    // show a permanent "enqueued" spinner in the Test Explorer.
+    const finalizedIds = new Set<string>();
     try {
         // Consumer must open its cursor before the producer starts, to avoid
         // the header-table race (SQL Developer issue #80 / ORA-00001 on the
@@ -246,7 +300,12 @@ async function runOneProfile(
         const rs = await openConsumer(consumerConn, id);
         await new Promise((resolve) => setTimeout(resolve, 100));
 
-        const produceOptions: ProduceOptions = { coverage: options.coverage };
+        const produceOptions: ProduceOptions = {
+            coverage: options.coverage,
+            tags: options.tags,
+            randomOrder: options.randomOrder,
+            seed: options.randomOrderSeed
+        };
         const produced = buildProduceSql(id, runPaths, produceOptions);
         ctx.output.appendLine(`utPLSQL: produce SQL:\n${produced.sql}`);
         // The producer runs concurrently with the consumer loop below and can
@@ -304,6 +363,7 @@ async function runOneProfile(
                     const item = activeItems.get(event.id) ?? known.get(pathId(profile, guessOwner(event.id, paths, known, profile), event.id));
                     trace(ctx, `utPLSQL: post-test id='${event.id}' -> ${item ? 'FOUND' : 'NOT FOUND'}, counter=${JSON.stringify(event.counter)}`);
                     if (item) {
+                        finalizedIds.add(item.id);
                         const durationMs = event.executionTime !== undefined ? event.executionTime * 1000 : undefined;
                         applyPostCounters(run, item, event.counter, durationMs, toTestMessages(event, item));
                         // Always emit at least a pass/fail summary line — serverOutput/
@@ -322,6 +382,7 @@ async function runOneProfile(
                 case 'post-suite': {
                     const item = activeItems.get(event.id) ?? known.get(pathId(profile, guessOwner(event.id, paths, known, profile), event.id));
                     if (item) {
+                        finalizedIds.add(item.id);
                         // Roll up the suite's own status from its aggregated counter —
                         // without this, run.started() was the last call ever made for
                         // the suite item, so it never reaches a terminal state and the
@@ -354,12 +415,31 @@ async function runOneProfile(
             throw produceError;
         }
 
+        // Anything enqueued above that never received a pre-/post-test or
+        // pre-/post-suite event was in scope for a_paths but excluded by
+        // a_tags (or the run was cancelled mid-stream) — it was never run,
+        // so it belongs in 'skipped', not left showing as still enqueued.
+        items.forEach((i) => {
+            if (!finalizedIds.has(i.id)) {
+                run.skipped(i);
+            }
+        });
+
         if (options.coverage && !token.isCancellationRequested) {
             const coverageXml = await consumeNamedReporter(producerConn, options.coverage.reporter, produced.coverageId!);
             const htmlReport = options.coverage.htmlReport
                 ? await consumeNamedReporter(producerConn, 'ut_coverage_html_reporter', produced.htmlId!)
                 : undefined;
-            return { coverageXml, htmlReport };
+            // Guard on produced.additionalCoverageId rather than
+            // options.coverage.additionalReporter: reportersClause() only
+            // allocates additionalCoverageId when additionalReporter is set
+            // AND differs from the primary reporter (see realtimeDao.ts), so
+            // checking additionalReporter alone could pass consumeNamedReporter
+            // an undefined id in that edge case.
+            const additionalCoverageXml = produced.additionalCoverageId
+                ? await consumeNamedReporter(producerConn, options.coverage.additionalReporter!, produced.additionalCoverageId)
+                : undefined;
+            return { coverageXml, htmlReport, additionalCoverageXml };
         }
         return {};
     } catch (err) {
@@ -405,8 +485,40 @@ async function safeClose(conn: Connection): Promise<void> {
     }
 }
 
-export async function runTests(ctx: UtplsqlContext, request: vscode.TestRunRequest, token: vscode.CancellationToken): Promise<void> {
+export interface RunTestsOptions {
+    tags?: string[];
+}
+
+/**
+ * a_random_test_order_seed only ever goes *into* ut_runner.run — the
+ * realtime reporter protocol never echoes back which seed the database
+ * ended up using when the caller left it unset, so "reproduce this run"
+ * only actually works once the user has set utplsql.run.randomOrderSeed
+ * themselves. Logging the seed we did/didn't pass (rather than pretending
+ * to read one back) keeps that honest.
+ */
+export function readRandomOrderConfig(): { randomOrder: boolean; randomOrderSeed?: number } {
+    const cfg = vscode.workspace.getConfiguration('utplsql');
+    const randomOrder = cfg.get<boolean>('run.randomOrder', false);
+    const seed = cfg.get<number>('run.randomOrderSeed', 0);
+    return { randomOrder, randomOrderSeed: randomOrder && seed > 0 ? seed : undefined };
+}
+
+export async function runTests(
+    ctx: UtplsqlContext,
+    request: vscode.TestRunRequest,
+    token: vscode.CancellationToken,
+    options: RunTestsOptions = {}
+): Promise<void> {
     const run = ctx.controller.createTestRun(request);
+    const { randomOrder, randomOrderSeed } = readRandomOrderConfig();
+    if (randomOrder) {
+        ctx.output.appendLine(
+            randomOrderSeed !== undefined
+                ? `utPLSQL: random test order enabled (seed ${randomOrderSeed})`
+                : 'utPLSQL: random test order enabled (no seed set — set utplsql.run.randomOrderSeed to reproduce this order)'
+        );
+    }
     try {
         const grouped = await measure('groupRequest', () => Promise.resolve(groupRequest(ctx, request)));
         for (const [profile, group] of grouped) {
@@ -414,7 +526,7 @@ export async function runTests(ctx: UtplsqlContext, request: vscode.TestRunReque
                 group.items.forEach((i) => run.skipped(i));
                 continue;
             }
-            await runOneProfile(ctx, run, profile, group.items, group.paths, token);
+            await runOneProfile(ctx, run, profile, group.items, group.paths, token, { tags: options.tags, randomOrder, randomOrderSeed });
         }
     } finally {
         run.end();

@@ -12,6 +12,7 @@ export interface CollectedEvent {
 export interface RunResult {
     events: CollectedEvent[];
     coverageXml?: string;
+    additionalCoverageXml?: string;
 }
 
 /**
@@ -58,8 +59,12 @@ export async function runPathsAndCollect(
     }
 
     let coverageXml: string | undefined;
+    let additionalCoverageXml: string | undefined;
     if (options.coverage) {
         coverageXml = await consumeNamedReporter(producerConn, options.coverage.reporter, produced.coverageId!);
+        if (options.coverage.additionalReporter) {
+            additionalCoverageXml = await consumeNamedReporter(producerConn, options.coverage.additionalReporter, produced.additionalCoverageId!);
+        }
     }
-    return { events, coverageXml };
+    return { events, coverageXml, additionalCoverageXml };
 }
