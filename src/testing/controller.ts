@@ -9,6 +9,7 @@ import { parseId, pathId, rootId, schemaId } from './ids';
 import { MetaStore, UtplsqlContext } from './model';
 import { runTests } from './runHandler';
 import { runCoverage, loadDetailedCoverage } from './coverage';
+import { runReporterExport } from './reporterProfile';
 import { getCachedVersion, clearVersionCache } from '../db/versionCache';
 
 const suitesCache = new Map<string, SuiteInfoRow[]>();
@@ -267,7 +268,14 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
     );
     coverageProfile.loadDetailedCoverage = loadDetailedCoverage;
 
-    extCtx.subscriptions.push(controller, output, runProfile, coverageProfile);
+    const reporterExportProfile = controller.createRunProfile(
+        'Export with Reporter',
+        vscode.TestRunProfileKind.Run,
+        (request, token) => runReporterExport(ctx, request, token),
+        false
+    );
+
+    extCtx.subscriptions.push(controller, output, runProfile, coverageProfile, reporterExportProfile);
 
     return ctx;
 }

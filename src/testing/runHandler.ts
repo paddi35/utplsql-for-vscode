@@ -190,6 +190,7 @@ interface RunOneProfileOptions {
 export interface RunOneProfileResult {
     coverageXml?: string;
     htmlReport?: string;
+    additionalCoverageXml?: string;
 }
 
 async function runOneProfile(
@@ -368,7 +369,10 @@ async function runOneProfile(
             const htmlReport = options.coverage.htmlReport
                 ? await consumeNamedReporter(producerConn, 'ut_coverage_html_reporter', produced.htmlId!)
                 : undefined;
-            return { coverageXml, htmlReport };
+            const additionalCoverageXml = options.coverage.additionalReporter
+                ? await consumeNamedReporter(producerConn, options.coverage.additionalReporter, produced.additionalCoverageId!)
+                : undefined;
+            return { coverageXml, htmlReport, additionalCoverageXml };
         }
         return {};
     } catch (err) {

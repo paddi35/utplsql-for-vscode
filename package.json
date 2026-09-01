@@ -126,6 +126,51 @@
           },
           "description": "Zusätzliche Objektnamen (z.B. UT, UT_EXPECTATION), die von der automatisch ermittelten Coverage-Scope ausgeschlossen werden sollen — z.B. wenn das utPLSQL-Framework selbst im gleichen Schema wie der getestete Code installiert ist und dadurch als Abhängigkeit des Testpakets erkannt wird."
         },
+        "utplsql.coverage.schemes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Übersteuert die automatisch aus den ausgewählten Tests ermittelten Coverage-Schemes (a_coverage_schemes) vollständig. Leer = automatische Ermittlung."
+        },
+        "utplsql.coverage.includeObjects": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Übersteuert die automatisch aus den Testabhängigkeiten ermittelten Coverage-Objekte (a_include_objects) vollständig — z.B. für Objekte, die nur dynamisch (execute immediate, Trigger) aufgerufen werden und daher in *_dependencies nicht auftauchen. Leer = automatische Ermittlung."
+        },
+        "utplsql.coverage.includeSchemaExpr": {
+          "type": "string",
+          "default": "",
+          "description": "Regex (a_include_schema_expr) zur zusätzlichen Coverage-Scope-Eingrenzung nach Schema-Namen."
+        },
+        "utplsql.coverage.includeObjectExpr": {
+          "type": "string",
+          "default": "",
+          "description": "Regex (a_include_object_expr) zur zusätzlichen Coverage-Scope-Eingrenzung nach Objekt-Namen."
+        },
+        "utplsql.coverage.excludeSchemaExpr": {
+          "type": "string",
+          "default": "",
+          "description": "Regex (a_exclude_schema_expr) zum Ausschluss von Schemas aus der Coverage-Scope."
+        },
+        "utplsql.coverage.excludeObjectExpr": {
+          "type": "string",
+          "default": "",
+          "description": "Regex (a_exclude_object_expr) zum Ausschluss von Objekten aus der Coverage-Scope, z.B. '^(UT|UT_.*)$', wenn utPLSQL im selben Schema wie der getestete Code installiert ist."
+        },
+        "utplsql.coverage.reporter": {
+          "type": "string",
+          "enum": [
+            "sonar",
+            "cobertura"
+          ],
+          "default": "sonar",
+          "description": "Zusätzliches Coverage-Ausgabeformat. Die native VS-Code-Coverage-Ansicht nutzt immer ut_coverage_sonar_reporter; bei 'cobertura' wird zusätzlich ein ut_coverage_cobertura_reporter-Lauf angefordert und nach jedem Coverage-Lauf als Datei angeboten."
+        },
         "utplsql.generate.testPackagePrefix": {
           "type": "string",
           "default": "test_"
@@ -172,6 +217,16 @@
           "default": 0,
           "minimum": 0,
           "description": "Seed for utplsql.run.randomOrder (a_random_test_order_seed). 0 leaves the seed unset, so the database picks a new one every run and the order cannot be reproduced afterwards; set a positive value to get the same order on every run."
+        },
+        "utplsql.reporter.clientCharacterSet": {
+          "type": "string",
+          "default": "",
+          "description": "Zeichensatz (a_client_character_set), in den der Reporter-Export (utplsql.runWithReporter / 'Export with Reporter') umgewandelt wird, z.B. 'AL32UTF8'. Leer = DB-Sitzungsstandard."
+        },
+        "utplsql.reporter.colorConsole": {
+          "type": "boolean",
+          "default": false,
+          "description": "ANSI-Farben im Reporter-Export aktivieren (a_color_console) — sinnvoll für textuelle Reporter wie ut_documentation_reporter, nicht für maschinenlesbare Formate."
         }
       }
     },

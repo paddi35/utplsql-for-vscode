@@ -6,6 +6,7 @@ import { runWithReporter as runWithReporterDao } from '../db/reporterDao';
 import { UtplsqlContext } from '../testing/model';
 import { runTests } from '../testing/runHandler';
 import { parseId, rootId } from '../testing/ids';
+import { readReporterOptions } from '../testing/reporterConfig';
 import { generateTestPackage, readGenerateOptions } from '../generate/testTemplate';
 import { matchesConfiguredLanguage } from '../workspace/languageIndex';
 import { listTnsAliases, resolveTnsAdminDir } from '../db/tnsnames';
@@ -303,7 +304,7 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             const consumerConn = await pool.getConnection();
             let output: string;
             try {
-                output = await runWithReporterDao(producerConn, consumerConn, reporterName, [runPath]);
+                output = await runWithReporterDao(producerConn, consumerConn, reporterName, [runPath], readReporterOptions());
             } finally {
                 await producerConn.close();
                 await consumerConn.close();

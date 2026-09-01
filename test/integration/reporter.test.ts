@@ -46,4 +46,37 @@ describe('reporter export against a real schema [integration]', function () {
             'ut_documentation_reporter should be among the reporters utplsql.runWithReporter offers in its quick-pick'
         );
     });
+
+    it('a_color_console adds ANSI escape codes to the documentation reporter output', async () => {
+        const plain = await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [`${TEST_OWNER}:test_calc_pkg.test_add`]);
+        const ansiEscape = /\x1b\[/;
+        assert.doesNotMatch(plain, ansiEscape, 'expected no ANSI escapes without a_color_console');
+
+        const colored = await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [`${TEST_OWNER}:test_calc_pkg.test_add`], {
+            colorConsole: true
+        });
+        assert.match(colored, ansiEscape, 'expected ANSI escapes with a_color_console => true');
+    });
+
+    it('accepts a_client_character_set without erroring', async () => {
+        // Confirms the parameter name/type match the installed ut_runner.run
+        // signature — the actual re-encoding is entirely server-side and not
+        // observable from a UTF-8 Node.js client, so this is a compile/accept
+        // smoke test rather than a byte-level assertion.
+        await assert.doesNotReject(
+            runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [`${TEST_OWNER}:test_calc_pkg.test_add`], {
+                clientCharacterSet: 'AL32UTF8'
+            })
+        );
+    });
+
+    it('runWithReporter accepts multiple run paths in one call, as the Export-with-Reporter profile needs for a multi-item selection', async () => {
+        const output = await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [
+            `${TEST_OWNER}:test_calc_pkg.test_add`,
+            `${TEST_OWNER}:test_calc_pkg.nested_context_#1.test_nested`
+        ]);
+        assert.match(output, /adds two numbers correctly/);
+        assert.match(output, /test nested inside a suite context/);
+        assert.doesNotMatch(output, /fails on purpose/);
+    });
 });

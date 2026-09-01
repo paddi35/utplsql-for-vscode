@@ -54,6 +54,71 @@ describe('buildProduceSql', () => {
         assert.notEqual(coverageId, 'abc123');
     });
 
+    it('binds the four regex scoping expressions as quoted varchar2 literals, not identifiers', () => {
+        const coverage: CoverageOptions = {
+            reporter: 'ut_coverage_sonar_reporter',
+            fileMappings: [],
+            includeSchemaExpr: 'APP_.*',
+            includeObjectExpr: "^(?!.*O'BRIEN).*$",
+            excludeSchemaExpr: 'SYS.*',
+            excludeObjectExpr: '^UT_.*'
+        };
+        const { sql } = buildProduceSql('abc123', ['UT3'], { coverage });
+        assert.match(sql, /a_include_schema_expr => 'APP_\.\*'/);
+        assert.match(sql, /a_include_object_expr => '\^\(\?!\.\*O''BRIEN\)\.\*\$'/);
+        assert.match(sql, /a_exclude_schema_expr => 'SYS\.\*'/);
+        assert.match(sql, /a_exclude_object_expr => '\^UT_\.\*'/);
+    });
+
+    it('omits regex scoping arguments that were not given', () => {
+        const coverage: CoverageOptions = { reporter: 'ut_coverage_sonar_reporter', fileMappings: [] };
+        const { sql } = buildProduceSql('abc123', ['UT3'], { coverage });
+        assert.doesNotMatch(sql, /_expr =>/);
+    });
+
+    it('declares a_test_file_mappings from testFileMappings, separate from a_source_file_mappings', () => {
+        const coverage: CoverageOptions = {
+            reporter: 'ut_coverage_sonar_reporter',
+            fileMappings: [{ file: 'db/calc_pkg.pkb', owner: 'UT3', name: 'CALC_PKG', type: 'PACKAGE BODY' }],
+            testFileMappings: [{ file: 'db/test_calc_pkg.pkb', owner: 'UT3', name: 'TEST_CALC_PKG', type: 'PACKAGE BODY' }]
+        };
+        const { sql } = buildProduceSql('abc123', ['UT3'], { coverage });
+        assert.match(sql, /l_test_mappings ut_file_mappings/);
+        assert.match(sql, /a_test_file_mappings => l_test_mappings/);
+        assert.match(sql, /'db\/test_calc_pkg\.pkb'/);
+    });
+
+    it('omits a_test_file_mappings when no test file mappings are given', () => {
+        const coverage: CoverageOptions = { reporter: 'ut_coverage_sonar_reporter', fileMappings: [] };
+        const { sql } = buildProduceSql('abc123', ['UT3'], { coverage });
+        assert.doesNotMatch(sql, /a_test_file_mappings/);
+        assert.doesNotMatch(sql, /l_test_mappings/);
+    });
+
+    it('adds a second coverage reporter with its own id when additionalReporter differs from reporter', () => {
+        const coverage: CoverageOptions = {
+            reporter: 'ut_coverage_sonar_reporter',
+            additionalReporter: 'ut_coverage_cobertura_reporter',
+            fileMappings: []
+        };
+        const { sql, coverageId, additionalCoverageId } = buildProduceSql('abc123', ['UT3'], { coverage });
+        assert.match(sql, /l_cov_rep2 ut_coverage_cobertura_reporter := ut_coverage_cobertura_reporter\(\)/);
+        assert.match(sql, /ut_reporters\(l_rt_rep, l_cov_rep, l_cov_rep2\)/);
+        assert.ok(additionalCoverageId && additionalCoverageId.length > 0);
+        assert.notEqual(additionalCoverageId, coverageId);
+    });
+
+    it('does not add a second reporter when additionalReporter equals reporter', () => {
+        const coverage: CoverageOptions = {
+            reporter: 'ut_coverage_cobertura_reporter',
+            additionalReporter: 'ut_coverage_cobertura_reporter',
+            fileMappings: []
+        };
+        const { sql, additionalCoverageId } = buildProduceSql('abc123', ['UT3'], { coverage });
+        assert.equal(additionalCoverageId, undefined);
+        assert.doesNotMatch(sql, /l_cov_rep2/);
+    });
+
     it('rejects an include/exclude object name that is not a plain identifier', () => {
         const coverage: CoverageOptions = {
             reporter: 'ut_coverage_sonar_reporter',
