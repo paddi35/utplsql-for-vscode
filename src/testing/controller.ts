@@ -13,6 +13,45 @@ import { measure, setPerfOutputChannel } from '../perf';
 
 const suitesCache = new Map<string, SuiteInfoRow[]>();
 
+/**
+ * Per (profile, owner), which SuiteInfoRow[] are the direct children of
+ * which suitepath — '' is the synthetic key for "direct child of the schema
+ * item itself" (a row whose own parent path isn't itself a row, same
+ * fallback rule the old eager buildSchemaTree used). Built once from the
+ * already-fetched/cached `rows` and reused by every resolveHandler call for
+ * that owner, so expanding node after node doesn't re-scan the full row set
+ * each time. Cleared alongside suitesCache on refresh.
+ */
+const childrenIndexCache = new Map<string, Map<string, SuiteInfoRow[]>>();
+
+function buildChildrenIndex(forOwner: SuiteInfoRow[]): Map<string, SuiteInfoRow[]> {
+    const paths = new Set(forOwner.map((r) => r.path));
+    const index = new Map<string, SuiteInfoRow[]>();
+    for (const row of forOwner) {
+        const dotIdx = row.path.lastIndexOf('.');
+        const parentPath = dotIdx === -1 ? undefined : row.path.slice(0, dotIdx);
+        const key = parentPath !== undefined && paths.has(parentPath) ? parentPath : '';
+        const list = index.get(key);
+        if (list) {
+            list.push(row);
+        } else {
+            index.set(key, [row]);
+        }
+    }
+    return index;
+}
+
+function childrenIndexFor(profile: string, owner: string, forOwner: SuiteInfoRow[]): Map<string, SuiteInfoRow[]> {
+    const key = `${profile}:${owner.toUpperCase()}`;
+    const cached = childrenIndexCache.get(key);
+    if (cached) {
+        return cached;
+    }
+    const index = buildChildrenIndex(forOwner);
+    childrenIndexCache.set(key, index);
+    return index;
+}
+
 async function fetchSuiteRows(profile: string): Promise<SuiteInfoRow[]> {
     const cached = suitesCache.get(profile);
     if (cached) {
@@ -105,30 +144,38 @@ async function resolveVirtualTypes(
     }
 }
 
-async function buildSchemaTree(
+/**
+ * Materializes exactly one level of the tree under `parentItem` — the rows
+ * that are direct children of the suitepath `parentItem` represents (or, for
+ * the schema item itself, the top-level rows) — instead of the whole
+ * ~15,000-row schema at once. A suite/context/suitepath-group row whose own
+ * path has entries in `index` gets `canResolveChildren = true`; the
+ * controller's own resolveHandler (kind === 'path') calls this again for
+ * that row's own id when the user actually expands it. Discovery still
+ * fetches every row in one DB round trip (splitting that into many smaller
+ * calls measured *slower*, not faster — see docs/performance.md); only the
+ * client-side vscode.TestItem construction is deferred.
+ */
+async function materializeLevel(
     controller: vscode.TestController,
     meta: MetaStore,
     sourceIndex: SourceIndex,
-    schemaItem: vscode.TestItem,
+    parentItem: vscode.TestItem,
     profile: string,
     owner: string,
-    rows: SuiteInfoRow[],
+    rowsAtLevel: SuiteInfoRow[],
+    index: Map<string, SuiteInfoRow[]>,
     secrets: vscode.SecretStorage
 ): Promise<void> {
-    const forOwner = rows.filter((r) => r.objectOwner.toUpperCase() === owner.toUpperCase());
-    forOwner.sort((a, b) => a.path.split('.').length - b.path.split('.').length);
-
     const missingNames = new Set<string>();
-    for (const row of forOwner) {
+    for (const row of rowsAtLevel) {
         if (!resolveLocation(sourceIndex, row)) {
             missingNames.add(row.objectName);
         }
     }
     const virtualTypes = await resolveVirtualTypes(secrets, profile, owner, [...missingNames]);
 
-    const created = new Map<string, vscode.TestItem>();
-
-    for (const row of forOwner) {
+    for (const row of rowsAtLevel) {
         const id = pathId(profile, owner, row.path);
         const location = resolveLocation(sourceIndex, row) ?? resolveVirtualLocation(profile, owner, row, virtualTypes);
         const item = controller.createTestItem(id, row.itemDescription || row.itemName, location?.uri);
@@ -140,14 +187,9 @@ async function buildSchemaTree(
             .map((t) => t.trim())
             .filter((t) => t.length > 0)
             .map((t) => new vscode.TestTag(t));
-        item.canResolveChildren = false;
+        item.canResolveChildren = index.has(row.path);
         meta.set(id, { profile, owner, suitepath: row.path, row });
-
-        const dotIdx = row.path.lastIndexOf('.');
-        const parentPath = dotIdx === -1 ? undefined : row.path.slice(0, dotIdx);
-        const parent = parentPath ? created.get(parentPath) : undefined;
-        (parent ?? schemaItem).children.add(item);
-        created.set(row.path, item);
+        parentItem.children.add(item);
     }
 }
 
@@ -222,14 +264,19 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
             }
             return;
         }
-        if (parsed.kind === 'schema') {
+        if (parsed.kind === 'schema' || parsed.kind === 'path') {
             item.children.replace([]);
             try {
+                const owner = parsed.owner;
                 const rows = await fetchSuiteRows(parsed.profile);
+                const forOwner = rows.filter((r) => r.objectOwner.toUpperCase() === owner.toUpperCase());
+                const index = childrenIndexFor(parsed.profile, owner, forOwner);
+                const levelKey = parsed.kind === 'schema' ? '' : parsed.suitepath;
+                const rowsAtLevel = index.get(levelKey) ?? [];
                 await measure(
                     'buildSchemaTree',
-                    () => buildSchemaTree(controller, meta, sourceIndex, item, parsed.profile, parsed.owner, rows, extCtx.secrets),
-                    { owner: parsed.owner, rows: rows.length }
+                    () => materializeLevel(controller, meta, sourceIndex, item, parsed.profile, owner, rowsAtLevel, index, extCtx.secrets),
+                    { owner, level: levelKey || '(top)', rows: rowsAtLevel.length }
                 );
             } catch (err) {
                 reportResolveError(item, err);
@@ -239,6 +286,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
 
     controller.refreshHandler = async () => {
         suitesCache.clear();
+        childrenIndexCache.clear();
         controller.items.forEach((root) => meta.deleteForProfile(parseId(root.id).profile));
         controller.items.replace([]);
         await controller.resolveHandler?.(undefined);
