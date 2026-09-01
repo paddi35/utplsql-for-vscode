@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import { Connection } from 'oracledb';
 import { getProfile } from '../db/connections';
 import { getPool, recyclePool } from '../db/pool';
+import * as dao from '../db/utplsqlDao';
+import { getCachedVersion } from '../db/versionCache';
 import {
     CoverageOptions,
     ProduceOptions,
@@ -180,6 +182,9 @@ function applyPostCounters(
 
 interface RunOneProfileOptions {
     coverage?: CoverageOptions;
+    tags?: string[];
+    randomOrder?: boolean;
+    randomOrderSeed?: number;
 }
 
 export interface RunOneProfileResult {
@@ -216,6 +221,16 @@ async function runOneProfile(
 
     const pool = await getPool(cfg, ctx.secrets, options.coverage ? 1 : 0);
     const producerConn = await pool.getConnection();
+
+    const version = await getCachedVersion(producerConn, profile);
+    const unsupported = dao.checkRealtimeReporterSupport(version, profile);
+    if (unsupported) {
+        items.forEach((i) => run.errored(i, new vscode.TestMessage(unsupported)));
+        ctx.output.appendLine(`utPLSQL: ${unsupported}`);
+        await safeClose(producerConn);
+        return {};
+    }
+
     const consumerConn = await pool.getConnection();
     const id = newReporterId();
     const runPaths = paths.map((p) => `${p.owner}:${p.suitepath}`);
@@ -237,7 +252,12 @@ async function runOneProfile(
         const rs = await openConsumer(consumerConn, id);
         await new Promise((resolve) => setTimeout(resolve, 100));
 
-        const produceOptions: ProduceOptions = { coverage: options.coverage };
+        const produceOptions: ProduceOptions = {
+            coverage: options.coverage,
+            tags: options.tags,
+            randomOrder: options.randomOrder,
+            seed: options.randomOrderSeed
+        };
         const produced = buildProduceSql(id, runPaths, produceOptions);
         ctx.output.appendLine(`utPLSQL: produce SQL:\n${produced.sql}`);
         // The producer runs concurrently with the consumer loop below and can
@@ -394,8 +414,40 @@ async function safeClose(conn: Connection): Promise<void> {
     }
 }
 
-export async function runTests(ctx: UtplsqlContext, request: vscode.TestRunRequest, token: vscode.CancellationToken): Promise<void> {
+export interface RunTestsOptions {
+    tags?: string[];
+}
+
+/**
+ * a_random_test_order_seed only ever goes *into* ut_runner.run — the
+ * realtime reporter protocol never echoes back which seed the database
+ * ended up using when the caller left it unset, so "reproduce this run"
+ * only actually works once the user has set utplsql.run.randomOrderSeed
+ * themselves. Logging the seed we did/didn't pass (rather than pretending
+ * to read one back) keeps that honest.
+ */
+export function readRandomOrderConfig(): { randomOrder: boolean; randomOrderSeed?: number } {
+    const cfg = vscode.workspace.getConfiguration('utplsql');
+    const randomOrder = cfg.get<boolean>('run.randomOrder', false);
+    const seed = cfg.get<number>('run.randomOrderSeed', 0);
+    return { randomOrder, randomOrderSeed: randomOrder && seed > 0 ? seed : undefined };
+}
+
+export async function runTests(
+    ctx: UtplsqlContext,
+    request: vscode.TestRunRequest,
+    token: vscode.CancellationToken,
+    options: RunTestsOptions = {}
+): Promise<void> {
     const run = ctx.controller.createTestRun(request);
+    const { randomOrder, randomOrderSeed } = readRandomOrderConfig();
+    if (randomOrder) {
+        ctx.output.appendLine(
+            randomOrderSeed !== undefined
+                ? `utPLSQL: random test order enabled (seed ${randomOrderSeed})`
+                : 'utPLSQL: random test order enabled (no seed set — set utplsql.run.randomOrderSeed to reproduce this order)'
+        );
+    }
     try {
         const grouped = groupRequest(ctx, request);
         for (const [profile, group] of grouped) {
@@ -403,7 +455,7 @@ export async function runTests(ctx: UtplsqlContext, request: vscode.TestRunReque
                 group.items.forEach((i) => run.skipped(i));
                 continue;
             }
-            await runOneProfile(ctx, run, profile, group.items, group.paths, token);
+            await runOneProfile(ctx, run, profile, group.items, group.paths, token, { tags: options.tags, randomOrder, randomOrderSeed });
         }
     } finally {
         run.end();

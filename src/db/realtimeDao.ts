@@ -131,7 +131,14 @@ export interface ProduceSql {
 
 export function buildProduceSql(id: string, paths: string[], options: ProduceOptions = {}): ProduceSql {
     const { reporters, decls, inits, coverageId, htmlId } = reportersClause(id, options.coverage);
-    const tagsBind = options.tags && options.tags.length > 0 ? `\n      a_tags => ${varchar2List(options.tags)},` : '';
+    // a_tags is a plain varchar2 (comma-separated tag list, OR-matched),
+    // not a ut_varchar2_list — unlike a_paths/a_include_objects/etc. Passing
+    // ut_varchar2_list(...) here compiles to a PLS-00306 wrong-argument-type
+    // error, which the producer connection never surfaces to the consumer:
+    // the realtime reporter never gets initialized, so the consumer just
+    // sits on its initial timeout instead of failing fast (caught via a live
+    // utPLSQL 3.2.3 instance, see test/integration/runOptions.test.ts).
+    const tagsBind = options.tags && options.tags.length > 0 ? `\n      a_tags => ${quoteLiteral(options.tags.join(','))},` : '';
     const randomOrder = options.randomOrder ? 'true' : 'false';
     const seedBind = options.seed !== undefined ? String(options.seed) : 'null';
     const coverageArgs = options.coverage

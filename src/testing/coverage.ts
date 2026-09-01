@@ -6,7 +6,7 @@ import * as dao from '../db/utplsqlDao';
 import { CoverageOptions } from '../db/realtimeDao';
 import { UtplsqlContext } from './model';
 import { virtualSourceUri } from '../workspace/virtualSource';
-import { groupRequest, runOneProfile } from './runHandler';
+import { groupRequest, runOneProfile, readRandomOrderConfig } from './runHandler';
 
 const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
 
@@ -69,6 +69,7 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
     const run = ctx.controller.createTestRun(request);
     const detailByUri = new Map<string, vscode.StatementCoverage[]>();
     detailedCoverage.set(run, detailByUri);
+    const { randomOrder, randomOrderSeed } = readRandomOrderConfig();
     try {
         const grouped = groupRequest(ctx, request);
         for (const [profile, group] of grouped) {
@@ -78,7 +79,9 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
             }
             const built = await buildCoverageOptions(ctx, profile, group.items);
             const result = await runOneProfile(ctx, run, profile, group.items, group.paths, token, {
-                coverage: built?.options
+                coverage: built?.options,
+                randomOrder,
+                randomOrderSeed
             });
             if (result.coverageXml) {
                 applyCoverage(ctx, run, detailByUri, result.coverageXml, built?.pathToUri ?? new Map());

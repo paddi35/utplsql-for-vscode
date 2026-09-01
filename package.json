@@ -161,6 +161,17 @@
         "utplsql.generate.indentSpaces": {
           "type": "integer",
           "default": 3
+        },
+        "utplsql.run.randomOrder": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run tests in a random order (a_random_test_order) instead of declaration order, to surface hidden order dependencies between tests."
+        },
+        "utplsql.run.randomOrderSeed": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "description": "Seed for utplsql.run.randomOrder (a_random_test_order_seed). 0 leaves the seed unset, so the database picks a new one every run and the order cannot be reproduced afterwards; set a positive value to get the same order on every run."
         }
       }
     },
@@ -180,6 +191,14 @@
       {
         "command": "utplsql.runTestAtCursor",
         "title": "utPLSQL: Run Test at Cursor"
+      },
+      {
+        "command": "utplsql.runWithTags",
+        "title": "utPLSQL: Run Tests with Tag"
+      },
+      {
+        "command": "utplsql.rebuildAnnotations",
+        "title": "utPLSQL: Rebuild Annotation Cache"
       },
       {
         "command": "utplsql.runWithReporter",
