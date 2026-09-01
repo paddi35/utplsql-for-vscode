@@ -1,0 +1,74 @@
+name: Performance Tests
+
+# Deliberately kept off every push/PR, same reasoning as integration.yml:
+# this generates a 1000-package/~15,000-test fixture (see
+# test/perf/support/perfFixture.sql, docs/performance.md) against a real
+# Oracle instance, which takes several minutes and does not belong on the
+# critical path of the normal dev/review loop. Triggerable on demand, plus a
+# weekly run so tree-view/discovery performance regressions still surface --
+# less frequently than integration.yml's nightly run, since this workflow's
+# own runtime is much longer and a regression here is rarely urgent enough
+# to need daily detection.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 1'
+
+jobs:
+  performance-tests:
+    runs-on: ubuntu-latest
+    env:
+      COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Build Oracle + utPLSQL image
+        run: docker compose build
+
+      - name: Start Oracle + utPLSQL container
+        run: docker compose up -d
+
+      - name: Wait for database to become healthy
+        run: |
+          docker compose logs -f oracle-utplsql &
+          LOG_PID=$!
+          trap 'kill "$LOG_PID" 2>/dev/null' EXIT
+          timeout 600 bash -c '
+            until [ "$(docker inspect -f "{{.State.Health.Status}}" oracle-utplsql 2>/dev/null)" = "healthy" ]; do
+              sleep 5
+            done
+          '
+
+      - name: Run performance tests
+        run: npm run test:perf
+
+      - name: Upload perf report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-report
+          # See test/perf/support/timing.ts's recordMeasurement() doc
+          # comment: one JSON line appended per measurement, across runs --
+          # the artifact itself is this run's file only; comparing it against
+          # past runs' artifacts is how a regression trend would be spotted.
+          path: test-results/perf-report.jsonl
+          if-no-files-found: warn
+
+      - name: Container logs
+        if: always()
+        run: docker compose logs
+
+      - name: Tear down containers
+        if: always()
+        run: docker compose down -v

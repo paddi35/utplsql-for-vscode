@@ -26,8 +26,16 @@ import {
 import { escalateStatus } from '../model/tree';
 import { OwnedPath, dedupPathList, parseId, pathId } from './ids';
 import { UtplsqlContext } from './model';
+import { measure, PerfCounter } from '../perf';
 
 const CALLER_LINE_RE = /"[^"]+",\s+line\s*([0-9]+)/i;
+
+/** utplsql.trace-gated version of ctx.output.appendLine, for the multiple-lines-per-event logging below (see that setting's description). */
+function trace(ctx: UtplsqlContext, text: string): void {
+    if (vscode.workspace.getConfiguration('utplsql').get<boolean>('trace', false)) {
+        ctx.output.appendLine(text);
+    }
+}
 
 function collectDescendants(item: vscode.TestItem, out: Map<string, vscode.TestItem>): void {
     out.set(item.id, item);
@@ -273,6 +281,7 @@ async function runOneProfile(
     });
 
     const activeItems = new Map<string, vscode.TestItem>();
+    const eventCounter = new PerfCounter();
     // Every item in `items` was run.enqueued() above, but a_tags/a_paths
     // scoping (see buildProduceSql) can mean the server only ever reports
     // events for a subset of them — e.g. utplsql.runWithTags enqueues every
@@ -313,9 +322,10 @@ async function runOneProfile(
         });
 
         for await (const row of streamRows(rs)) {
-            ctx.output.appendLine(`utPLSQL: received event itemType='${row.itemType}'`);
+            eventCounter.increment();
+            trace(ctx, `utPLSQL: received event itemType='${row.itemType}'`);
             if (token.isCancellationRequested) {
-                ctx.output.appendLine('utPLSQL: cancellation requested, stopping consumption');
+                trace(ctx, 'utPLSQL: cancellation requested, stopping consumption');
                 break;
             }
             const event = parseEvent(row.itemType, row.text, (msg) => ctx.output.appendLine(msg));
@@ -332,7 +342,7 @@ async function runOneProfile(
                 case 'pre-suite': {
                     const lookupId = pathId(profile, guessOwner(event.suite.id, paths, known, profile), event.suite.id);
                     const item = known.get(lookupId);
-                    ctx.output.appendLine(`utPLSQL: pre-suite id='${event.suite.id}' -> lookup '${lookupId}' -> ${item ? 'FOUND' : 'NOT FOUND'}`);
+                    trace(ctx, `utPLSQL: pre-suite id='${event.suite.id}' -> lookup '${lookupId}' -> ${item ? 'FOUND' : 'NOT FOUND'}`);
                     if (item) {
                         run.started(item);
                         activeItems.set(event.suite.id, item);
@@ -342,7 +352,7 @@ async function runOneProfile(
                 case 'pre-test': {
                     const lookupId = pathId(profile, guessOwner(event.test.id, paths, known, profile), event.test.id);
                     const item = known.get(lookupId);
-                    ctx.output.appendLine(`utPLSQL: pre-test id='${event.test.id}' -> lookup '${lookupId}' -> ${item ? 'FOUND' : 'NOT FOUND'}`);
+                    trace(ctx, `utPLSQL: pre-test id='${event.test.id}' -> lookup '${lookupId}' -> ${item ? 'FOUND' : 'NOT FOUND'}`);
                     if (item) {
                         run.started(item);
                         activeItems.set(event.test.id, item);
@@ -351,7 +361,7 @@ async function runOneProfile(
                 }
                 case 'post-test': {
                     const item = activeItems.get(event.id) ?? known.get(pathId(profile, guessOwner(event.id, paths, known, profile), event.id));
-                    ctx.output.appendLine(`utPLSQL: post-test id='${event.id}' -> ${item ? 'FOUND' : 'NOT FOUND'}, counter=${JSON.stringify(event.counter)}`);
+                    trace(ctx, `utPLSQL: post-test id='${event.id}' -> ${item ? 'FOUND' : 'NOT FOUND'}, counter=${JSON.stringify(event.counter)}`);
                     if (item) {
                         finalizedIds.add(item.id);
                         const durationMs = event.executionTime !== undefined ? event.executionTime * 1000 : undefined;
@@ -399,6 +409,7 @@ async function runOneProfile(
                 }
             }
         }
+        eventCounter.report('runOneProfile event stream', { profile });
         await producePromise;
         if (produceError !== undefined) {
             throw produceError;
@@ -509,7 +520,7 @@ export async function runTests(
         );
     }
     try {
-        const grouped = groupRequest(ctx, request);
+        const grouped = await measure('groupRequest', () => Promise.resolve(groupRequest(ctx, request)));
         for (const [profile, group] of grouped) {
             if (token.isCancellationRequested) {
                 group.items.forEach((i) => run.skipped(i));

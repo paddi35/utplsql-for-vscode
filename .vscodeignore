@@ -3,6 +3,7 @@
 src/**
 test/**
 docker/**
+docs/**
 .gitignore
 .vscodeignore
 .env

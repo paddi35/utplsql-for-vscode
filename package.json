@@ -227,6 +227,21 @@
           "type": "boolean",
           "default": false,
           "description": "ANSI-Farben im Reporter-Export aktivieren (a_color_console) — sinnvoll für textuelle Reporter wie ut_documentation_reporter, nicht für maschinenlesbare Formate."
+        },
+        "utplsql.trace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Detailliertes Event-Logging (ein bis mehrere Zeilen pro pre-/post-test-Event) in den 'utPLSQL'-Output-Channel schreiben. Nützlich zur Fehlersuche, aber bei sehr vielen Tests (siehe utplsql.perf.enabled) spürbar langsamer — im Normalbetrieb deaktiviert lassen."
+        },
+        "utplsql.perf.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Zeitmessungen für Discovery- und Run-Schritte (Baumaufbau, Event-Durchsatz) in den 'utPLSQL'-Output-Channel schreiben. Siehe docs/performance.md."
+        },
+        "utplsql.perf.reportFile": {
+          "type": "string",
+          "default": "",
+          "description": "Wenn gesetzt und utplsql.perf.enabled aktiv ist, wird jede Zeitmessung zusätzlich als JSON-Zeile an diese Datei angehängt."
         }
       }
     },
@@ -300,7 +315,11 @@
     "test:unit": "mocha --require ts-node/register --extensions ts \"test/unit/**/*.test.ts\"",
     "pretest:unit": "echo using ts-node",
     "test:integration": "mocha --require ts-node/register --extensions ts --timeout 30000 \"test/integration/**/*.test.ts\"",
-    "test": "npm run typecheck && npm run test:unit"
+    "test": "npm run typecheck && npm run test:unit",
+    "test:perf": "mocha --require ts-node/register --extensions ts --timeout 1200000 \"test/perf/**/*.perf.test.ts\"",
+    "perf:generate": "ts-node test/perf/support/cli.ts generate",
+    "perf:scale": "ts-node test/perf/support/cli.ts scale",
+    "perf:drop": "ts-node test/perf/support/cli.ts drop"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.7",
