@@ -24,8 +24,16 @@ import {
 import { escalateStatus } from '../model/tree';
 import { OwnedPath, dedupPathList, parseId, pathId } from './ids';
 import { UtplsqlContext } from './model';
+import { measure, PerfCounter } from '../perf';
 
 const CALLER_LINE_RE = /"[^"]+",\s+line\s*([0-9]+)/i;
+
+/** utplsql.trace-gated version of ctx.output.appendLine, for the multiple-lines-per-event logging below (see that setting's description). */
+function trace(ctx: UtplsqlContext, text: string): void {
+    if (vscode.workspace.getConfiguration('utplsql').get<boolean>('trace', false)) {
+        ctx.output.appendLine(text);
+    }
+}
 
 function collectDescendants(item: vscode.TestItem, out: Map<string, vscode.TestItem>): void {
     out.set(item.id, item);
@@ -228,6 +236,7 @@ async function runOneProfile(
     });
 
     const activeItems = new Map<string, vscode.TestItem>();
+    const eventCounter = new PerfCounter();
     try {
         // Consumer must open its cursor before the producer starts, to avoid
         // the header-table race (SQL Developer issue #80 / ORA-00001 on the
@@ -254,9 +263,10 @@ async function runOneProfile(
         });
 
         for await (const row of streamRows(rs)) {
-            ctx.output.appendLine(`utPLSQL: received event itemType='${row.itemType}'`);
+            eventCounter.increment();
+            trace(ctx, `utPLSQL: received event itemType='${row.itemType}'`);
             if (token.isCancellationRequested) {
-                ctx.output.appendLine('utPLSQL: cancellation requested, stopping consumption');
+                trace(ctx, 'utPLSQL: cancellation requested, stopping consumption');
                 break;
             }
             const event = parseEvent(row.itemType, row.text, (msg) => ctx.output.appendLine(msg));
@@ -273,7 +283,7 @@ async function runOneProfile(
                 case 'pre-suite': {
                     const lookupId = pathId(profile, guessOwner(event.suite.id, paths, known, profile), event.suite.id);
                     const item = known.get(lookupId);
-                    ctx.output.appendLine(`utPLSQL: pre-suite id='${event.suite.id}' -> lookup '${lookupId}' -> ${item ? 'FOUND' : 'NOT FOUND'}`);
+                    trace(ctx, `utPLSQL: pre-suite id='${event.suite.id}' -> lookup '${lookupId}' -> ${item ? 'FOUND' : 'NOT FOUND'}`);
                     if (item) {
                         run.started(item);
                         activeItems.set(event.suite.id, item);
@@ -283,7 +293,7 @@ async function runOneProfile(
                 case 'pre-test': {
                     const lookupId = pathId(profile, guessOwner(event.test.id, paths, known, profile), event.test.id);
                     const item = known.get(lookupId);
-                    ctx.output.appendLine(`utPLSQL: pre-test id='${event.test.id}' -> lookup '${lookupId}' -> ${item ? 'FOUND' : 'NOT FOUND'}`);
+                    trace(ctx, `utPLSQL: pre-test id='${event.test.id}' -> lookup '${lookupId}' -> ${item ? 'FOUND' : 'NOT FOUND'}`);
                     if (item) {
                         run.started(item);
                         activeItems.set(event.test.id, item);
@@ -292,7 +302,7 @@ async function runOneProfile(
                 }
                 case 'post-test': {
                     const item = activeItems.get(event.id) ?? known.get(pathId(profile, guessOwner(event.id, paths, known, profile), event.id));
-                    ctx.output.appendLine(`utPLSQL: post-test id='${event.id}' -> ${item ? 'FOUND' : 'NOT FOUND'}, counter=${JSON.stringify(event.counter)}`);
+                    trace(ctx, `utPLSQL: post-test id='${event.id}' -> ${item ? 'FOUND' : 'NOT FOUND'}, counter=${JSON.stringify(event.counter)}`);
                     if (item) {
                         const durationMs = event.executionTime !== undefined ? event.executionTime * 1000 : undefined;
                         applyPostCounters(run, item, event.counter, durationMs, toTestMessages(event, item));
@@ -338,6 +348,7 @@ async function runOneProfile(
                 }
             }
         }
+        eventCounter.report('runOneProfile event stream', { profile });
         await producePromise;
         if (produceError !== undefined) {
             throw produceError;
@@ -397,7 +408,7 @@ async function safeClose(conn: Connection): Promise<void> {
 export async function runTests(ctx: UtplsqlContext, request: vscode.TestRunRequest, token: vscode.CancellationToken): Promise<void> {
     const run = ctx.controller.createTestRun(request);
     try {
-        const grouped = groupRequest(ctx, request);
+        const grouped = await measure('groupRequest', () => Promise.resolve(groupRequest(ctx, request)));
         for (const [profile, group] of grouped) {
             if (token.isCancellationRequested) {
                 group.items.forEach((i) => run.skipped(i));

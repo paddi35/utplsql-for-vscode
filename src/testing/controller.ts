@@ -9,6 +9,7 @@ import { parseId, pathId, rootId, schemaId } from './ids';
 import { MetaStore, UtplsqlContext } from './model';
 import { runTests } from './runHandler';
 import { runCoverage, loadDetailedCoverage } from './coverage';
+import { measure, setPerfOutputChannel } from '../perf';
 
 const suitesCache = new Map<string, SuiteInfoRow[]>();
 
@@ -29,7 +30,7 @@ async function fetchSuiteRows(profile: string): Promise<SuiteInfoRow[]> {
                 `utPLSQL ${version.raw} is too old (needs >= 3.1.3 for get_suites_info). Extension stays inactive for '${profile}'.`
             );
         }
-        const rows = await dao.getSuitesInfo(conn);
+        const rows = await measure('getSuitesInfo', () => dao.getSuitesInfo(conn), { profile });
         suitesCache.set(profile, rows);
         return rows;
     } finally {
@@ -98,7 +99,7 @@ async function resolveVirtualTypes(
     }
     const conn = await getConnection(cfg, secrets);
     try {
-        return await dao.getPackageObjectTypes(conn, owner, names);
+        return await measure('getPackageObjectTypes', () => dao.getPackageObjectTypes(conn, owner, names), { names: names.length });
     } finally {
         await conn.close();
     }
@@ -155,6 +156,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
     const controller = vscode.tests.createTestController('utplsql', 'utPLSQL');
     const meta = new MetaStore();
     const output = vscode.window.createOutputChannel('utPLSQL');
+    setPerfOutputChannel(output);
     const ctx: UtplsqlContext = { controller, meta, output, secrets: extCtx.secrets, sourceIndex };
 
     const reportResolveError = (item: vscode.TestItem, err: unknown): void => {
@@ -224,7 +226,11 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
             item.children.replace([]);
             try {
                 const rows = await fetchSuiteRows(parsed.profile);
-                await buildSchemaTree(controller, meta, sourceIndex, item, parsed.profile, parsed.owner, rows, extCtx.secrets);
+                await measure(
+                    'buildSchemaTree',
+                    () => buildSchemaTree(controller, meta, sourceIndex, item, parsed.profile, parsed.owner, rows, extCtx.secrets),
+                    { owner: parsed.owner, rows: rows.length }
+                );
             } catch (err) {
                 reportResolveError(item, err);
             }
