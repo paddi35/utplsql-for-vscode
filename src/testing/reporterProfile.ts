@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { Connection } from 'oracledb';
 import { getProfile } from '../db/connections';
 import { getPool } from '../db/pool';
 import * as dao from '../db/utplsqlDao';
@@ -29,27 +30,43 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
             return;
         }
 
-        const [firstProfile] = grouped.keys();
-        const firstCfg = getProfile(firstProfile);
-        if (!firstCfg) {
+        // Probe every profile in the selection, not just the first one: a
+        // multi-select can span connection profiles pointing at different
+        // databases, and each one's utPLSQL install can have its own set of
+        // output reporters (different version, different granted packages).
+        // Offering a reporter that only exists on the first profile would
+        // otherwise only fail later, per-profile, after the user has already
+        // committed to an output target for all of them.
+        const profiles = [...grouped.keys()];
+        const reporterSets: Array<Set<string>> = [];
+        for (const profile of profiles) {
+            const cfg = getProfile(profile);
+            if (!cfg) {
+                continue;
+            }
+            const pool = await getPool(cfg, ctx.secrets, 1);
+            const probeConn = await pool.getConnection();
+            try {
+                const reporters = await dao.getReportersList(probeConn);
+                reporterSets.push(new Set(reporters.map((r) => r.reporterObjectName)));
+            } finally {
+                await probeConn.close();
+            }
+        }
+        if (reporterSets.length === 0) {
+            vscode.window.showErrorMessage('utPLSQL: none of the selected connection profiles could be reached to list reporters.');
             return;
         }
-        const probePool = await getPool(firstCfg, ctx.secrets, 1);
-        const probeConn = await probePool.getConnection();
-        let reporters;
-        try {
-            reporters = await dao.getReportersList(probeConn);
-        } finally {
-            await probeConn.close();
-        }
-        if (reporters.length === 0) {
-            vscode.window.showErrorMessage(`utPLSQL: no output reporters available on '${firstProfile}'.`);
+        const common = [...reporterSets[0]].filter((name) => reporterSets.every((s) => s.has(name))).sort();
+        if (common.length === 0) {
+            vscode.window.showErrorMessage(
+                profiles.length > 1
+                    ? `utPLSQL: no output reporter is available on all ${profiles.length} selected connection profiles.`
+                    : `utPLSQL: no output reporters available on '${profiles[0]}'.`
+            );
             return;
         }
-        const reporterName = await vscode.window.showQuickPick(
-            reporters.map((r) => r.reporterObjectName),
-            { title: 'Select reporter' }
-        );
+        const reporterName = await vscode.window.showQuickPick(common, { title: 'Select reporter' });
         if (!reporterName) {
             return;
         }
@@ -72,8 +89,21 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
                 continue;
             }
             const pool = await getPool(cfg, ctx.secrets, 1);
-            const producerConn = await pool.getConnection();
-            const consumerConn = await pool.getConnection();
+            let producerConn: Connection;
+            try {
+                producerConn = await pool.getConnection();
+            } catch (err) {
+                group.items.forEach((i) => run.errored(i, new vscode.TestMessage(String(err))));
+                continue;
+            }
+            let consumerConn: Connection;
+            try {
+                consumerConn = await pool.getConnection();
+            } catch (err) {
+                group.items.forEach((i) => run.errored(i, new vscode.TestMessage(String(err))));
+                await producerConn.close().catch(() => undefined);
+                continue;
+            }
             const runPaths = group.paths.map((p) => `${p.owner}:${p.suitepath}`);
             try {
                 const output = await runWithReporter(producerConn, consumerConn, reporterName, runPaths, readReporterOptions());

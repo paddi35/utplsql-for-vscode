@@ -122,39 +122,19 @@ interface BuiltCoverage {
     pathToUri: Map<string, vscode.Uri>;
 }
 
-/** Resolves one owner.name to a source-file-mapping entry: a local workspace file, or a virtual DB-source fallback. */
-async function resolveFileMapping(
-    ctx: UtplsqlContext,
-    scopeConn: Connection,
-    profile: string,
-    owner: string,
-    name: string
-): Promise<{ mapping: CoverageOptions['fileMappings'][number]; uri: vscode.Uri } | undefined> {
-    const loc = ctx.sourceIndex.lookupPackage(name);
-    if (loc) {
-        const file = vscode.workspace.asRelativePath(loc.uri, false).replace(/\\/g, '/');
-        ctx.output.appendLine(`utPLSQL: coverage — mapped '${owner}.${name}' to local file '${file}'`);
-        return { mapping: { file, owner, name, type: loc.isBody ? 'PACKAGE BODY' : 'PACKAGE' }, uri: loc.uri };
-    }
-
-    // No local workspace file (e.g. this project keeps the DB as the sole
-    // source of truth) — fall back to a virtual, DB-backed document instead
-    // of dropping the object from coverage entirely, so native gutters/the
-    // Test Coverage panel still get something to point at.
-    const objType = await dao.getPackageObjectType(scopeConn, owner, name);
-    if (!objType) {
-        ctx.output.appendLine(
-            `utPLSQL: coverage — '${owner}.${name}' has neither a local file nor a PACKAGE/PACKAGE BODY in the database, excluding it from the coverage file mappings`
-        );
-        return undefined;
-    }
-    const isBody = objType === 'PACKAGE BODY';
-    const uri = virtualSourceUri(profile, owner, name, isBody);
-    const file = `${owner}/${name}.${isBody ? 'pkb' : 'pks'}`;
-    ctx.output.appendLine(`utPLSQL: coverage — no local source file for '${owner}.${name}', mapped to virtual DB source '${file}'`);
-    return { mapping: { file, owner, name, type: objType }, uri };
-}
-
+/**
+ * Resolves owner.name pairs to source-file-mapping entries: a local
+ * workspace file where the sourceIndex has one, otherwise a virtual
+ * DB-source fallback. The DB fallback's object-type lookup is batched one
+ * query per owner (via dao.getPackageObjectTypes, the same helper
+ * controller.ts's resolveVirtualTypes uses) instead of one query per object:
+ * a single oracledb Connection doesn't support concurrent execute() calls,
+ * so Promise.all-ing a per-object dao.getPackageObjectType isn't a safe way
+ * to avoid N sequential round trips — batching the bind list is. This
+ * matters most for a project with no local source at all (the DB is the
+ * sole source of truth), where every object previously fell through to its
+ * own round trip.
+ */
 async function resolveFileMappings(
     ctx: UtplsqlContext,
     scopeConn: Connection,
@@ -163,13 +143,57 @@ async function resolveFileMappings(
 ): Promise<{ fileMappings: CoverageOptions['fileMappings']; pathToUri: Map<string, vscode.Uri> }> {
     const fileMappings: CoverageOptions['fileMappings'] = [];
     const pathToUri = new Map<string, vscode.Uri>();
-    for (const { owner, name } of objects) {
-        const resolved = await resolveFileMapping(ctx, scopeConn, profile, owner, name);
-        if (resolved) {
-            fileMappings.push(resolved.mapping);
-            pathToUri.set(resolved.mapping.file, resolved.uri);
+
+    const localByKey = new Map<string, { mapping: CoverageOptions['fileMappings'][number]; uri: vscode.Uri }>();
+    const needsLookup = new Map<string, Set<string>>(); // owner -> object names still needing a DB round trip
+    const uniqueObjects = [...objects];
+
+    for (const { owner, name } of uniqueObjects) {
+        const loc = ctx.sourceIndex.lookupPackage(name);
+        if (loc) {
+            const file = vscode.workspace.asRelativePath(loc.uri, false).replace(/\\/g, '/');
+            ctx.output.appendLine(`utPLSQL: coverage — mapped '${owner}.${name}' to local file '${file}'`);
+            localByKey.set(`${owner}.${name}`, { mapping: { file, owner, name, type: loc.isBody ? 'PACKAGE BODY' : 'PACKAGE' }, uri: loc.uri });
+            continue;
         }
+        const names = needsLookup.get(owner) ?? new Set<string>();
+        names.add(name);
+        needsLookup.set(owner, names);
     }
+
+    // No local workspace file for these (e.g. this project keeps the DB as
+    // the sole source of truth) — fall back to a virtual, DB-backed document
+    // instead of dropping them from coverage entirely, so native gutters/the
+    // Test Coverage panel still get something to point at.
+    const dbTypeByKey = new Map<string, 'PACKAGE BODY' | 'PACKAGE'>();
+    for (const [owner, names] of needsLookup) {
+        const types = await dao.getPackageObjectTypes(scopeConn, owner, [...names]);
+        types.forEach((type, objectName) => dbTypeByKey.set(`${owner}.${objectName}`, type));
+    }
+
+    for (const { owner, name } of uniqueObjects) {
+        const key = `${owner}.${name}`;
+        const local = localByKey.get(key);
+        if (local) {
+            fileMappings.push(local.mapping);
+            pathToUri.set(local.mapping.file, local.uri);
+            continue;
+        }
+        const objType = dbTypeByKey.get(`${owner}.${name.toUpperCase()}`);
+        if (!objType) {
+            ctx.output.appendLine(
+                `utPLSQL: coverage — '${owner}.${name}' has neither a local file nor a PACKAGE/PACKAGE BODY in the database, excluding it from the coverage file mappings`
+            );
+            continue;
+        }
+        const isBody = objType === 'PACKAGE BODY';
+        const uri = virtualSourceUri(profile, owner, name, isBody);
+        const file = `${owner}/${name}.${isBody ? 'pkb' : 'pks'}`;
+        ctx.output.appendLine(`utPLSQL: coverage — no local source file for '${owner}.${name}', mapped to virtual DB source '${file}'`);
+        fileMappings.push({ file, owner, name, type: objType });
+        pathToUri.set(file, uri);
+    }
+
     return { fileMappings, pathToUri };
 }
 
