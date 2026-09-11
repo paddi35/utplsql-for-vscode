@@ -39,7 +39,11 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
 - The Test Explorer tree is now materialized one level at a time: expanding a schema, suite, or
   package builds only its direct children instead of eagerly turning every row the schema's suites
   return into a `TestItem` up front, which made expanding a schema with many packages noticeably
-  slow.
+  slow. Running a suite/package that was never individually expanded now resolves its subtree first,
+  so every test it contains still gets a visible pass/fail result; re-resolving an already-expanded
+  node (which a run now does, and which the editor itself may do after a reload) updates its
+  existing `TestItem`s in place instead of discarding and rebuilding them, so a just-finished run's
+  results stay attached instead of disappearing from the sidebar the next time that node is opened.
 
 ### Fixed
 
