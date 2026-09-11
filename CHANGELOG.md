@@ -34,6 +34,13 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
   include/exclude/unordered modifiers, JSON `to_equal`, `ut.fail`, and a verified
   `ut.set_nls`/`ut.reset_nls` pattern).
 
+### Changed
+
+- The Test Explorer tree is now materialized one level at a time: expanding a schema, suite, or
+  package builds only its direct children instead of eagerly turning every row the schema's suites
+  return into a `TestItem` up front, which made expanding a schema with many packages noticeably
+  slow.
+
 ### Fixed
 
 - `a_tags` was bound as a `ut_varchar2_list` instead of the plain, comma-joined `varchar2` value
