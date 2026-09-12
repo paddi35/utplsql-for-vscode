@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { Connection } from 'oracledb';
 import { XMLParser } from 'fast-xml-parser';
 import { getPool } from '../db/pool';
@@ -8,6 +11,7 @@ import { CoverageOptions } from '../db/realtimeDao';
 import { UtplsqlContext } from './model';
 import { virtualSourceUri } from '../workspace/virtualSource';
 import { groupRequest, runOneProfile, readRandomOrderConfig } from './runHandler';
+import { withContentSecurityPolicy } from './coverageHtml';
 
 const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
 
@@ -88,7 +92,7 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
                 applyCoverage(ctx, run, detailByUri, result.coverageXml, built?.pathToUri ?? new Map());
             }
             if (result.htmlReport && vscode.workspace.getConfiguration('utplsql').get<boolean>('coverage.htmlReport')) {
-                showHtmlReport(result.htmlReport);
+                await showHtmlReport(ctx, result.htmlReport);
             }
             if (result.additionalCoverageXml) {
                 await offerAdditionalCoverageFile(ctx, result.additionalCoverageXml);
@@ -313,44 +317,85 @@ export async function loadDetailedCoverage(
     return detailedCoverage.get(testRun)?.get(fileCoverage.uri.toString()) ?? [];
 }
 
-let htmlPanel: vscode.WebviewPanel | undefined;
-
 /**
- * ut_coverage_html_reporter's output is a self-contained report with its own
- * inline <script>/<style> (the collapsible file/line view) — with scripts
- * disabled the panel opens but stays blank/inert, so inline code has to stay
- * allowed. The report also embeds database-derived text (object names and
- * package source lines) though, and on a shared database that is not all
- * written by the person reading the report. This policy therefore permits
- * exactly the report's own inline code and nothing else: 'none' as the
- * default covers connect-src, so the panel has no network destination to
- * send anything to.
+ * Issue #13: ut_coverage_html_reporter's report is assembled by the database
+ * from database-derived text (schema names, object names, verbatim package
+ * source lines) that on a shared schema is not necessarily written by
+ * whoever is viewing the report, and utPLSQL does not escape any of it (see
+ * test/integration/coverage.test.ts's XSS-passthrough case). This used to
+ * render the report in an extension-host webview with enableScripts: true —
+ * needed because the report's own collapsible file/line view is driven by
+ * its own inline <script>, so scripts could not just be turned off. A CSP of
+ * default-src 'none'; script-src 'unsafe-inline' meant an injected <script>
+ * in that report could still execute inside the webview, could still call
+ * acquireVsCodeApi().postMessage(...) (harmless only because no message
+ * handler was ever registered on the extension side), and could still
+ * rewrite the panel's own DOM to impersonate extension UI — a CSP caps what
+ * injected script can *send*, not what it can *run* or *whose surface it
+ * runs on*.
+ *
+ * Of the three mitigations issue #13 lists — (1) stop executing the report
+ * at all and hand it to the browser instead, (2) keep the webview but wrap
+ * the report in a sandboxed <iframe srcdoc> without allow-same-origin so it
+ * cannot reach acquireVsCodeApi(), (3) at minimum hardening REPORT_CSP and
+ * stripping any competing policy the report carries — this implements (1),
+ * the one the issue ranks first, plus (3) (see coverageHtml.ts's REPORT_CSP)
+ * regardless, since it costs nothing extra once (1) is in place. (2) was
+ * rejected here on implementation-risk grounds specific to this fix: getting
+ * a <iframe srcdoc="..."> attribute-escaping wrong is exactly the class of
+ * bug this issue is about, there is no Oracle instance available in this
+ * environment to render a real report and confirm the escaping/sandboxing
+ * actually holds, and (2) still leaves both the acquireVsCodeApi() hinge and
+ * the DOM-rewrite risk standing on *some* code path (a same-document parent
+ * frame two DOM nodes away) rather than removing them. (1) removes both
+ * outright: a browser tab has no acquireVsCodeApi to reach and no extension
+ * UI to impersonate, because neither exists there at all — nothing to get
+ * subtly wrong. withContentSecurityPolicy() is still applied to the file
+ * that gets written, so the parts of the containment that never depended on
+ * "is this a webview" — no networking, no framing, no form/base
+ * redirection — carry over unchanged; arguably they matter *more* now, since
+ * a real browser has a real network stack where a bare webview mostly
+ * doesn't.
+ *
+ * This does change user-visible behaviour: the report no longer opens
+ * automatically beside the editor — viewing it now takes one extra click via
+ * the notification below, and it opens in the OS browser instead of inside
+ * VS Code. That trade-off is deliberate (see the issue), but it does leave
+ * utplsql.coverage.htmlReport's package.json description ("...und in einem
+ * Webview anzeigen") stale; updating it is out of this change's scope
+ * (package.json is off limits here) and left for a follow-up.
+ *
+ * The file is written under the OS temp directory rather than
+ * context.globalStorageUri: ExtensionContext is not currently threaded into
+ * this module (every function here takes UtplsqlContext instead, which does
+ * not carry it), and threading it through would mean touching extension.ts,
+ * out of scope for this fix. A fresh, randomly-named file per call avoids
+ * collisions between reports from different profiles/runs in the same
+ * session; nothing here deletes it afterwards, same as this file's existing
+ * offerAdditionalCoverageFile save-dialog flow leaves its target file
+ * alone — the OS reclaims its own temp directory on its own schedule, and
+ * a coverage report is not sensitive enough to warrant more than that.
  */
-const REPORT_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;";
+async function showHtmlReport(ctx: UtplsqlContext, html: string): Promise<void> {
+    const hardened = withContentSecurityPolicy(html);
+    const buffer = Buffer.from(hardened, 'utf8');
+    const tempUri = vscode.Uri.file(path.join(os.tmpdir(), `utplsql-coverage-${randomUUID()}.html`));
+    await vscode.workspace.fs.writeFile(tempUri, buffer);
+    ctx.output.appendLine(`utPLSQL: coverage HTML report written to ${tempUri.fsPath}`);
 
-function withContentSecurityPolicy(html: string): string {
-    const meta = `<meta http-equiv="Content-Security-Policy" content="${REPORT_CSP}">`;
-    const head = /<head[^>]*>/i.exec(html);
-    if (!head) {
-        return meta + html;
-    }
-    const insertAt = head.index + head[0].length;
-    return html.slice(0, insertAt) + meta + html.slice(insertAt);
-}
-
-function showHtmlReport(html: string): void {
-    if (!htmlPanel) {
-        htmlPanel = vscode.window.createWebviewPanel('utplsqlCoverage', 'utPLSQL Coverage', vscode.ViewColumn.Beside, {
-            enableScripts: true,
-            // The report is fully self-contained, so it never needs to read
-            // a file; left at its default a webview may load resources from
-            // the extension's install directory and every workspace folder.
-            localResourceRoots: []
+    const openInBrowser = 'Open in Browser';
+    const saveAs = 'Save As…';
+    const choice = await vscode.window.showInformationMessage('utPLSQL: coverage HTML report is ready.', openInBrowser, saveAs);
+    if (choice === openInBrowser) {
+        await vscode.env.openExternal(tempUri);
+    } else if (choice === saveAs) {
+        const target = await vscode.window.showSaveDialog({
+            filters: { 'HTML report': ['html'] },
+            saveLabel: 'Save Coverage HTML Report'
         });
-        htmlPanel.onDidDispose(() => {
-            htmlPanel = undefined;
-        });
+        if (target) {
+            await vscode.workspace.fs.writeFile(target, buffer);
+            ctx.output.appendLine(`utPLSQL: coverage HTML report saved to ${target.fsPath}`);
+        }
     }
-    htmlPanel.webview.html = withContentSecurityPolicy(html);
-    htmlPanel.reveal(vscode.ViewColumn.Beside);
 }
