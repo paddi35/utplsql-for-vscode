@@ -319,13 +319,16 @@
     "test:perf": "mocha --require ts-node/register --extensions ts --timeout 1200000 \"test/perf/**/*.perf.test.ts\"",
     "perf:generate": "ts-node test/perf/support/cli.ts generate",
     "perf:scale": "ts-node test/perf/support/cli.ts scale",
-    "perf:drop": "ts-node test/perf/support/cli.ts drop"
+    "perf:drop": "ts-node test/perf/support/cli.ts drop",
+    "pretest:e2e": "esbuild test/e2e/testExplorer.e2e.test.ts --bundle --platform=node --external:vscode --outfile=test/e2e/out/testExplorer.e2e.test.js --format=cjs && node test/e2e/support/copyFixtures.js",
+    "test:e2e": "ts-node test/e2e/runTests.ts"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.7",
     "@types/node": "^20.14.0",
     "@types/oracledb": "^6.10.4",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.28.2",
     "mocha": "^12.0.0",

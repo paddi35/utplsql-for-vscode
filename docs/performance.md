@@ -175,37 +175,42 @@ hotspots below:
   level at a time` and `Fix run results not attaching to tests that were
   never individually expanded` commits.
 
-## Known hotspots (not fixed here)
+## Known hotspots
 
 Reading `src/testing/*` and `src/db/*` while building this fixture surfaced
-four concrete performance concerns, roughly in order of expected impact —
-listed here as the punch list for the follow-up work this fixture exists to
-measure, not fixed in this pass:
+four concrete performance concerns. Two are now fixed, two remain:
 
-1. **`dedupPathList` (`src/testing/ids.ts`) is O(n²)** — `unique.filter(c
-   => unique.some(isCoveredBy))`. "Run All" selects every path-bearing
+1. ~~**`dedupPathList` (`src/testing/ids.ts`) was O(n²)**~~ Fixed:
+   `unique.filter(c => unique.some(isCoveredBy))` rescanned the whole
+   selection for every candidate. "Run All" selects every path-bearing
    `TestItem` (suites, contexts *and* tests, not just leaves) into
-   `groupRequest`'s candidate list before this runs. See
-   `test/unit/dedupPathList.perf.test.ts` for a reproduction at a smaller
-   (CI-fast) scale — its own recorded measurement already shows the
-   quadratic cost.
+   `groupRequest`'s candidate list before this runs, so at the full
+   1000-package/~16,000-path scale this was real, measured latency (~1.4s
+   for the ~8,000-path shape `test/unit/dedupPathList.perf.test.ts`
+   reproduces). It's now O(n * depth) — see `hasSelectedAncestor` in
+   `ids.ts` — down to ~20ms for the same input; the perf test's ceiling was
+   tightened accordingly, so a regression back to O(n²) fails it.
 2. **Realtime event streaming is one DB round-trip per event**
    (`fetchArraySize: 1` in `src/db/realtimeDao.ts`'s `openConsumer`) — this
    is *mandatory* for live progress, not a bug (see that function's own
    doc comment), but it means ~30,000+ round-trips for a full-fixture run,
    which is real latency on anything but a local/low-latency connection.
-3. **Per-event output-channel logging** was unconditional before this
-   change (now behind `utplsql.trace`, see above) — several `appendLine`
-   calls per event add up across tens of thousands of events.
-
-~~4. `buildSchemaTree`'s sort comparator recomputed `path.split('.').length`
-on every comparison rather than once per row up front.~~ Moot: the lazy,
-one-level-at-a-time `materializeLevel` that replaced `buildSchemaTree` (see
-Findings above) doesn't sort at all — each level's rows come straight out
-of the children-index built once per owner.
+   Not planned to change.
+3. ~~**Per-event output-channel logging** was unconditional~~ Fixed: now
+   behind `utplsql.trace` (see above), since several `appendLine` calls per
+   event added up across tens of thousands of events.
+4. ~~**`buildSchemaTree`'s sort comparator** recomputed
+   `path.split('.').length` on every comparison rather than once per row up
+   front.~~ Moot: the lazy, one-level-at-a-time `materializeLevel` that
+   replaced `buildSchemaTree` (see Findings above) doesn't sort at all —
+   each level's rows come straight out of the children-index built once per
+   owner.
 
 ## Open follow-ups
 
 - An automated `@vscode/test-electron` level for the real tree view (see
-  the manual checklist above) — not implemented in this pass.
-- Fixing the hotspots above.
+  the manual checklist above) — see
+  `test/e2e/testExplorer.e2e.test.ts` for the first one, covering the
+  lazy-materialization/run-resolution fix above; extending it to filtering,
+  cancellation, and coverage runs is still open.
+- Item 2 above (one round-trip per streamed event) is accepted, not open.
