@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { Connection } from 'oracledb';
 import * as dao from '../../src/db/utplsqlDao';
 import { getTestConnection, closeTestPool, TEST_OWNER } from './support/db';
-import { installFixture, FIXTURE_OWNER_OBJECT } from './support/fixture';
+import { installFixture, FIXTURE_OWNER_OBJECT, SUITEPATH_GROUP_PATH, SUITEPATH_FIXTURE_OBJECT } from './support/fixture';
+
+const KNOWN_ITEM_TYPES = new Set(['UT_SUITE', 'UT_SUITE_CONTEXT', 'UT_TEST', 'UT_LOGICAL_SUITE']);
 
 /**
  * Exercises utplsqlDao (src/db/utplsqlDao.ts) against a real utPLSQL schema —
@@ -70,6 +72,34 @@ describe('utplsqlDao discovery against a real schema [integration]', function ()
         const nested = byItemName.get('TEST_NESTED');
         assert.ok(nested, 'expected the test nested under --%context to be discovered');
         assert.equal(nested!.path, 'test_calc_pkg.nested_context_#1.test_nested');
+    });
+
+    it('reports a --%suitepath group as itemType UT_LOGICAL_SUITE (issue #27)', async () => {
+        const rows = await dao.getSuitesInfo(conn, TEST_OWNER, SUITEPATH_FIXTURE_OBJECT);
+        const group = rows.find((r) => r.path === SUITEPATH_GROUP_PATH);
+        assert.ok(group, `expected a row at path '${SUITEPATH_GROUP_PATH}' for the --%suitepath group, got ${JSON.stringify(rows)}`);
+        assert.equal(
+            group!.itemType,
+            'UT_LOGICAL_SUITE',
+            'pins the docs/performance.md Findings observation — a utPLSQL version change that alters this should fail loudly here'
+        );
+        assert.ok(rows.some((r) => r.itemType === 'UT_TEST' && r.path === `${SUITEPATH_GROUP_PATH}.test_in_group`));
+    });
+
+    it('never reports an unrecognised item_type against the live utPLSQL version under test (cheap guard against a future 5th kind)', async () => {
+        const unknown: unknown[] = [];
+        const rows = await dao.getSuitesInfo(conn, TEST_OWNER, undefined, (raw) => unknown.push(raw));
+        assert.deepEqual(
+            unknown,
+            [],
+            `get_suites_info returned an item_type this extension does not declare — extend SuiteInfoRow['itemType'] and KNOWN_ITEM_TYPES in utplsqlDao.ts: ${JSON.stringify(unknown)}`
+        );
+        // Belt-and-braces: parseItemType's fallback means an unknown type
+        // would already have been coerced to 'UT_SUITE' above rather than
+        // violate this, so the assertion with teeth is onUnknownItemType
+        // firing (or not) — this just also documents the union it's checked
+        // against.
+        assert.ok(rows.every((r) => KNOWN_ITEM_TYPES.has(r.itemType)));
     });
 
     it('lists output reporters including the realtime and documentation reporters', async () => {

@@ -8,7 +8,10 @@ import {
     checkRealtimeReporterSupport,
     VERSION_REALTIME_REPORTER,
     getDbaView,
-    clearDbaViewCache
+    clearDbaViewCache,
+    getSuitesInfo,
+    parseItemType,
+    isTestItem
 } from '../../src/db/utplsqlDao';
 
 /**
@@ -26,6 +29,11 @@ function fakeProbeConnection(behavior: () => Promise<unknown>): { conn: Connecti
         }
     } as unknown as Connection;
     return { conn, calls: () => count };
+}
+
+/** Scripted Connection fake for getSuitesInfo — returns exactly the given rows from its one execute() call, ignoring the SQL/binds. */
+function fakeRowsConnection(rows: Record<string, unknown>[]): Connection {
+    return { execute: async () => ({ rows }) } as unknown as Connection;
 }
 
 describe('normalizeVersion', () => {
@@ -186,5 +194,67 @@ describe('getDbaView', () => {
         assert.equal(await getDbaView(reprobeB.conn, 'B'), 'dba_');
         assert.equal(reprobeA.calls(), 1);
         assert.equal(reprobeB.calls(), 1);
+    });
+});
+
+describe('parseItemType', () => {
+    it('returns each of the four item types get_suites_info can return, unchanged', () => {
+        assert.equal(parseItemType('UT_SUITE'), 'UT_SUITE');
+        assert.equal(parseItemType('UT_SUITE_CONTEXT'), 'UT_SUITE_CONTEXT');
+        assert.equal(parseItemType('UT_TEST'), 'UT_TEST');
+        assert.equal(parseItemType('UT_LOGICAL_SUITE'), 'UT_LOGICAL_SUITE');
+    });
+
+    it('returns undefined for an item_type it does not recognise', () => {
+        assert.equal(parseItemType('UT_SOMETHING_NEW'), undefined);
+    });
+
+    it('does not throw for null or undefined', () => {
+        assert.equal(parseItemType(null), undefined);
+        assert.equal(parseItemType(undefined), undefined);
+    });
+});
+
+describe('isTestItem', () => {
+    it('treats UT_TEST as a test', () => {
+        assert.equal(isTestItem('UT_TEST'), true);
+    });
+
+    it('treats UT_SUITE, UT_SUITE_CONTEXT and UT_LOGICAL_SUITE as non-tests', () => {
+        assert.equal(isTestItem('UT_SUITE'), false);
+        assert.equal(isTestItem('UT_SUITE_CONTEXT'), false);
+        assert.equal(isTestItem('UT_LOGICAL_SUITE'), false);
+    });
+});
+
+describe('getSuitesInfo item_type handling', () => {
+    function row(itemType: string): Record<string, unknown> {
+        return {
+            OBJECT_OWNER: 'HR',
+            OBJECT_NAME: 'PERF_G01',
+            ITEM_NAME: 'perf.g01',
+            ITEM_TYPE: itemType,
+            PATH: 'perf.g01',
+            DISABLED_FLAG: 0
+        };
+    }
+
+    it('maps a UT_LOGICAL_SUITE row straight through without calling onUnknownItemType', async () => {
+        const seen: unknown[] = [];
+        const rows = await getSuitesInfo(fakeRowsConnection([row('UT_LOGICAL_SUITE')]), undefined, undefined, (raw) => seen.push(raw));
+        assert.equal(rows[0].itemType, 'UT_LOGICAL_SUITE');
+        assert.deepEqual(seen, []);
+    });
+
+    it('calls onUnknownItemType exactly once, naming the raw value, for a row with an unrecognised item_type, and treats it as a suite', async () => {
+        const seen: unknown[] = [];
+        const rows = await getSuitesInfo(fakeRowsConnection([row('UT_SOMETHING_NEW')]), undefined, undefined, (raw) => seen.push(raw));
+        assert.deepEqual(seen, ['UT_SOMETHING_NEW']);
+        assert.equal(rows[0].itemType, 'UT_SUITE');
+    });
+
+    it('works without an onUnknownItemType callback at all', async () => {
+        const rows = await getSuitesInfo(fakeRowsConnection([row('UT_SOMETHING_NEW')]));
+        assert.equal(rows[0].itemType, 'UT_SUITE');
     });
 });
