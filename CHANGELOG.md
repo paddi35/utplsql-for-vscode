@@ -62,6 +62,28 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
   `Run with Coverage` and `Export with Reporter` — and the "Known limitations" section a few
   paragraphs down already said as much. Both now read "Run utPLSQL unit tests…"; debugging stays
   out of scope until VS Code has a PL/SQL debug adapter for this extension to drive.
+- `SourceIndex` re-indexed documents through a single shared debounce timer: editing one file and
+  then a different file within the 400 ms debounce window cancelled the first file's pending
+  re-index via `clearTimeout`, so only the most recently edited document was ever re-parsed. The
+  index silently went stale for every file but the last one touched — gutter icons, "go to test",
+  and a failed expectation's location could all point at the wrong line — until that file was
+  reopened or the window reloaded. Re-indexing is now debounced per document URI, so edits across
+  several files inside the same window are each still re-indexed.
+- The pre-run `run paths for '<profile>' = …` log line (embedding every selected `TestItem` id)
+  and the `produce SQL: …` log line (embedding the entire generated PL/SQL block) were written to
+  the `utPLSQL` output channel unconditionally on every run, instead of being gated behind
+  `utplsql.trace` like the rest of this file's per-event logging already is. On the documented
+  1000-package/~15,000-test fixture, a plain "Run All" wrote on the order of a megabyte in a single
+  call right as the run started, burying every other line already in the output channel. Both are
+  now gated behind `utplsql.trace`; a short, count-bounded summary line is still always logged, and
+  the full produce SQL is still logged unconditionally when a run fails.
+- PL/SQL source files changed outside the editor — a `git checkout`/`pull`, a branch switch, or a
+  file created/deleted by another tool — were never re-indexed; only opening or editing a document
+  in VS Code itself fed the workspace index, so `lookupPackage()`/`lookupProcedure()` kept handing
+  out stale locations (or, for a deleted file, a location that no longer exists) for the rest of
+  the session, with a window reload the only fix. A filesystem watcher now indexes created/changed
+  files and removes deleted ones as they happen; closing an untitled/unsaved document now also
+  drops its entries instead of leaving them behind, and closing a saved one re-reads it from disk.
 
 ### Security
 
@@ -74,6 +96,16 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
   logging the rejection once instead of silently swallowing it in a bare `catch {}`, and appends
   the report line with `fs.appendFile` (async) instead of `appendFileSync` so a slow/contended disk
   can no longer block the extension host.
+- The `TNS_ADMIN` directory fallback no longer trusts a workspace-scoped value of
+  `sqldeveloper.connections.tnsConfiguration.path` — a setting owned by the Oracle SQL Developer
+  for VSCode extension, not this one, and outside this extension's control. It was previously read
+  with a plain `get()`, which does not distinguish a workspace-set value from a global one, and the
+  resulting directory was passed straight to `oracledb.createPool()`'s `configDir` — so a
+  workspace's own `.vscode/settings.json` could redefine the TNS alias a stored-password connection
+  profile names and redirect that connection, credentials included, to a host the workspace chose.
+  The fallback now reads that setting via `inspect()` and only honours its global/default value;
+  `utplsql.connections.tnsAdminPath` (already machine-scoped) still takes priority, and a
+  workspace-scoped SQL Developer value is ignored in favour of `TNS_ADMIN`.
 
 ## [0.1.0] - 2026-08-31
 
