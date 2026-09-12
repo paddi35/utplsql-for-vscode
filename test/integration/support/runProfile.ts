@@ -1,5 +1,5 @@
 import { Connection } from 'oracledb';
-import { ProduceOptions, buildProduceSql, newReporterId, openConsumer, streamRows, consumeNamedReporter } from '../../../src/db/realtimeDao';
+import { ProduceOptions, ProduceSql, buildProduceSql, newReporterId, openConsumer, streamRows, consumeNamedReporter } from '../../../src/db/realtimeDao';
 import { parseEvent } from '../../../src/model/eventParser';
 import { UtplsqlEvent } from '../../../src/model/events';
 
@@ -13,6 +13,14 @@ export interface RunResult {
     events: CollectedEvent[];
     coverageXml?: string;
     additionalCoverageXml?: string;
+    /**
+     * The exact ProduceSql this call sent to the producer connection --
+     * exposed so a test can assert logged output is byte-identical to what
+     * was actually executed (see test/integration/run.test.ts's runOneProfile
+     * logging cases) instead of reconstructing it separately with a
+     * different, freshly generated reporter id.
+     */
+    produced: ProduceSql;
 }
 
 /**
@@ -28,9 +36,15 @@ export async function runPathsAndCollect(
     producerConn: Connection,
     consumerConn: Connection,
     paths: string[],
-    options: ProduceOptions = {}
+    options: ProduceOptions = {},
+    // Overridable so a caller can independently rebuild the identical
+    // ProduceSql (same id, same paths, same options -> buildProduceSql is
+    // pure) after this call rejects, when the run being tested is a
+    // deliberate producer failure -- see run.test.ts's "logs the produce SQL
+    // in the failure path" case, which needs `produced` even though this
+    // function only returns it on the success path below.
+    id: string = newReporterId()
 ): Promise<RunResult> {
-    const id = newReporterId();
     const rs = await openConsumer(consumerConn, id);
     await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -66,5 +80,5 @@ export async function runPathsAndCollect(
             additionalCoverageXml = await consumeNamedReporter(producerConn, options.coverage.additionalReporter, produced.additionalCoverageId!);
         }
     }
-    return { events, coverageXml, additionalCoverageXml };
+    return { events, coverageXml, additionalCoverageXml, produced };
 }
