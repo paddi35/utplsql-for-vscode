@@ -58,4 +58,34 @@ end pkg_x;
         const entry = findEntryAtOffset(entries, offsetOfP2Body);
         assert.equal(entry?.key, 'PKG_X.P2');
     });
+
+    /**
+     * Gives the #20 debounce fix its actual teeth: a per-key debouncer that
+     * fires but always re-derives the same stale range would still pass
+     * every PerKeyDebouncer test (see sourceIndex.test.ts) while leaving the
+     * exact symptom the issue reports — "the gutter icon is on the wrong
+     * line" — unfixed. This pins that a correct re-index of moved source
+     * actually produces a different, correct offset/line, so a regression
+     * that reindexes without truly re-parsing would be caught here instead.
+     */
+    it('reflects a procedure that moved down by N lines with updated start offsets', () => {
+        const before = ['create or replace package body pkg_x is', '  procedure p1;', 'end pkg_x;', '/', ''].join('\n');
+        const shiftedBy = 5;
+        const after = [
+            'create or replace package body pkg_x is',
+            ...new Array(shiftedBy).fill(''),
+            '  procedure p1;',
+            'end pkg_x;',
+            '/',
+            ''
+        ].join('\n');
+
+        const entryBefore = parseSource(before).find((e) => e.key === 'PKG_X.P1');
+        const entryAfter = parseSource(after).find((e) => e.key === 'PKG_X.P1');
+
+        assert.ok(entryBefore, 'expected PKG_X.P1 in the unshifted source');
+        assert.ok(entryAfter, 'expected PKG_X.P1 in the shifted source');
+        assert.equal(entryAfter!.start.line, entryBefore!.start.line + shiftedBy);
+        assert.notEqual(entryAfter!.start.offset, entryBefore!.start.offset);
+    });
 });

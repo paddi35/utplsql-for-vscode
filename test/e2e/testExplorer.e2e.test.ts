@@ -8,6 +8,7 @@ import { installFixture } from '../integration/support/fixture';
 import { ExtensionApi } from '../../src/extension';
 import { UtplsqlContext } from '../../src/testing/model';
 import { runTests as runControllerTests } from '../../src/testing/runHandler';
+import { buildSourceIndexWatcherCases } from './support/sourceIndexCases';
 
 const EXTENSION_ID = 'paddi35.utplsql-for-vscode';
 const PROFILE_NAME = 'e2e-test';
@@ -411,9 +412,10 @@ async function testWorkspacePerfSettingsAreIgnored(ctx: UtplsqlContext, schema: 
  * tag-scoped run against a real reporter, cancellation, (issue #23) that
  * an untraced run's output-channel footprint stays small, (issue #12) that
  * a workspace-scoped SQL Developer TNS path cannot redirect a credentialed
- * connection, and (issue #11) that a workspace cannot turn on or redirect
- * perf instrumentation via its own .vscode/settings.json; see
- * docs/performance.md's Findings/Open
+ * connection, (issue #11) that a workspace cannot turn on or redirect perf
+ * instrumentation via its own .vscode/settings.json, and (issues #20/#26,
+ * via support/sourceIndexCases.ts) SourceIndex's per-URI debounce and its
+ * FileSystemWatcher; see docs/performance.md's Findings/Open
  * follow-ups.
  */
 export async function run(): Promise<void> {
@@ -455,11 +457,16 @@ export async function run(): Promise<void> {
         const pkg = findChildByLabel(schema.children, PACKAGE_LABEL);
         assert.ok(pkg, `fixture package '${PACKAGE_LABEL}' not found under the schema — did installFixture run?`);
 
+        const workspaceUri = vscode.workspace.workspaceFolders?.[0]?.uri;
+        assert.ok(workspaceUri, 'expected the e2e run to open exactly one workspace folder (see runTests.ts)');
+
         // Order matters: the tag-scoped case needs `pkg` to still be
         // unexpanded (0 children) when it starts, so it must run first —
         // see its own doc comment. The remaining cases don't depend on
-        // pkg's starting state — the untraced-logging case runs last for
-        // exactly that reason (see its own doc comment).
+        // pkg's starting state. The sourceIndexCases.ts cases are appended
+        // last because their final case deletes test_calc_pkg.pkb from
+        // disk (see that file's own doc comment for why they, in turn, must
+        // run in the order they're built in).
         const cases: Array<[string, () => Promise<void>]> = [
             ['a tag-scoped run resolves an unexpanded package', () => testTagScopedRunResolvesAnUnexpandedPackage(ctx, pkg!)],
             ['running a package attaches results to every test and survives re-resolution', () => testPackageAttachesResultsAndSurvivesReResolution(ctx, pkg!)],
@@ -469,7 +476,8 @@ export async function run(): Promise<void> {
                 'a workspace-scoped SQL Developer TNS path is ignored in favour of TNS_ADMIN (issue #12)',
                 () => testWorkspaceScopedSqlDeveloperTnsPathIsIgnored(ctx, user, password, owner)
             ],
-            ['a workspace-supplied utplsql.perf.* setting is ignored (scope: machine)', () => testWorkspacePerfSettingsAreIgnored(ctx, schema!)]
+            ['a workspace-supplied utplsql.perf.* setting is ignored (scope: machine)', () => testWorkspacePerfSettingsAreIgnored(ctx, schema!)],
+            ...buildSourceIndexWatcherCases(ctx, pkg!, workspaceUri!)
         ];
 
         const failures: string[] = [];
