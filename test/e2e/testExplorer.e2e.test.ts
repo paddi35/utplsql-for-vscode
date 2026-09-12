@@ -5,6 +5,7 @@ import { installFixture } from '../integration/support/fixture';
 import { ExtensionApi } from '../../src/extension';
 import { UtplsqlContext } from '../../src/testing/model';
 import { runTests as runControllerTests } from '../../src/testing/runHandler';
+import { buildSourceIndexWatcherCases } from './support/sourceIndexCases';
 
 const EXTENSION_ID = 'paddi35.utplsql-for-vscode';
 const PROFILE_NAME = 'e2e-test';
@@ -180,8 +181,10 @@ async function testCancellationLeavesStateUsable(ctx: UtplsqlContext, pkg: vscod
  * a real VS Code extension host (not a mock `vscode` module) via
  * @vscode/test-electron — see test/e2e/runTests.ts for how this file is
  * launched. Covers the tree-materialization/run-resolution fixes, a
- * tag-scoped run against a real reporter, and cancellation; see
- * docs/performance.md's Findings/Open follow-ups.
+ * tag-scoped run against a real reporter, cancellation, and (via
+ * support/sourceIndexCases.ts) SourceIndex's per-URI debounce and its
+ * FileSystemWatcher (#20/#26); see docs/performance.md's Findings/Open
+ * follow-ups.
  */
 export async function run(): Promise<void> {
     const pool = await getTestPool();
@@ -222,14 +225,21 @@ export async function run(): Promise<void> {
         const pkg = findChildByLabel(schema.children, PACKAGE_LABEL);
         assert.ok(pkg, `fixture package '${PACKAGE_LABEL}' not found under the schema — did installFixture run?`);
 
+        const workspaceUri = vscode.workspace.workspaceFolders?.[0]?.uri;
+        assert.ok(workspaceUri, 'expected the e2e run to open exactly one workspace folder (see runTests.ts)');
+
         // Order matters: the tag-scoped case needs `pkg` to still be
         // unexpanded (0 children) when it starts, so it must run first —
         // see its own doc comment. The other two cases don't depend on
-        // pkg's starting state.
+        // pkg's starting state. The sourceIndexCases.ts cases are appended
+        // last because their final case deletes test_calc_pkg.pkb from
+        // disk (see that file's own doc comment for why they, in turn, must
+        // run in the order they're built in).
         const cases: Array<[string, () => Promise<void>]> = [
             ['a tag-scoped run resolves an unexpanded package', () => testTagScopedRunResolvesAnUnexpandedPackage(ctx, pkg!)],
             ['running a package attaches results to every test and survives re-resolution', () => testPackageAttachesResultsAndSurvivesReResolution(ctx, pkg!)],
-            ['cancelling a run leaves the pool/tree usable for the next one', () => testCancellationLeavesStateUsable(ctx, pkg!)]
+            ['cancelling a run leaves the pool/tree usable for the next one', () => testCancellationLeavesStateUsable(ctx, pkg!)],
+            ...buildSourceIndexWatcherCases(ctx, pkg!, workspaceUri!)
         ];
 
         const failures: string[] = [];
