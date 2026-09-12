@@ -100,7 +100,7 @@
           "type": "string",
           "scope": "machine",
           "default": "",
-          "description": "Ordner mit tnsnames.ora (TNS_ADMIN). Wenn leer, wird die Einstellung 'sqldeveloper.connections.tnsConfiguration.path' der Oracle-SQL-Developer-Extension übernommen, falls gesetzt, sonst die Umgebungsvariable TNS_ADMIN. Wird als connectString direkt der Alias eingetragen, löst node-oracledb ihn beim Verbindungsaufbau selbst auf."
+          "description": "Ordner mit tnsnames.ora (TNS_ADMIN). Wenn leer, wird die Einstellung 'sqldeveloper.connections.tnsConfiguration.path' der Oracle-SQL-Developer-Extension übernommen, aber nur, wenn sie auf Benutzer-/Geräteebene gesetzt ist — ein von einem Workspace gesetzter Wert wird ignoriert, da der Scope dieser fremden Einstellung nicht in unserer Kontrolle liegt —, sonst die Umgebungsvariable TNS_ADMIN. Wird als connectString direkt der Alias eingetragen, löst node-oracledb ihn beim Verbindungsaufbau selbst auf."
         },
         "utplsql.discovery.languageIds": {
           "type": "array",
