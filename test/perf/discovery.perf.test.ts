@@ -69,7 +69,7 @@ describe('discovery at 1000-package scale [perf]', function () {
     it('getPackageObjectTypes resolves every package with no local workspace source in one batched call', async () => {
         const names = Array.from({ length: 1000 }, (_, i) => `${PERF_PACKAGE_PREFIX}${String(i + 1).padStart(4, '0')}`);
 
-        const { result, ms } = await timed(() => dao.getPackageObjectTypes(conn, TEST_OWNER, names));
+        const { result, ms } = await timed(() => dao.getPackageObjectTypes(conn, TEST_OWNER, names, 'perf'));
         recordMeasurement({ name: 'getPackageObjectTypes(1000 names)', unit: 'ms', value: ms, meta: { names: names.length } });
 
         // getPackageObjectTypes builds `object_name IN (:n0, :n1, ...)` with
