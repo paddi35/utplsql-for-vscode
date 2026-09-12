@@ -235,11 +235,13 @@
         },
         "utplsql.perf.enabled": {
           "type": "boolean",
+          "scope": "machine",
           "default": false,
           "description": "Zeitmessungen für Discovery- und Run-Schritte (Baumaufbau, Event-Durchsatz) in den 'utPLSQL'-Output-Channel schreiben. Siehe docs/performance.md."
         },
         "utplsql.perf.reportFile": {
           "type": "string",
+          "scope": "machine",
           "default": "",
           "description": "Wenn gesetzt und utplsql.perf.enabled aktiv ist, wird jede Zeitmessung zusätzlich als JSON-Zeile an diese Datei angehängt."
         }

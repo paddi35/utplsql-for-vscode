@@ -63,6 +63,18 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
   paragraphs down already said as much. Both now read "Run utPLSQL unit tests…"; debugging stays
   out of scope until VS Code has a PL/SQL debug adapter for this extension to drive.
 
+### Security
+
+- `utplsql.perf.reportFile`/`utplsql.perf.enabled` are now `"scope": "machine"`, like
+  `utplsql.connections`, so a workspace's own `.vscode/settings.json` can no longer set either.
+  Previously a repository could ship both settings and have the extension append a JSON line to an
+  attacker-chosen path outside the workspace on the very first Test Explorer expand (any
+  `measure()` span — discovery and run are both instrumented). `src/perf.ts` now also resolves
+  `perf.reportFile` and refuses to write anywhere that isn't inside an open workspace folder,
+  logging the rejection once instead of silently swallowing it in a bare `catch {}`, and appends
+  the report line with `fs.appendFile` (async) instead of `appendFileSync` so a slow/contended disk
+  can no longer block the extension host.
+
 ## [0.1.0] - 2026-08-31
 
 Initial version.
