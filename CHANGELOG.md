@@ -106,6 +106,14 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
   The fallback now reads that setting via `inspect()` and only honours its global/default value;
   `utplsql.connections.tnsAdminPath` (already machine-scoped) still takes priority, and a
   workspace-scoped SQL Developer value is ignored in favour of `TNS_ADMIN`.
+- The coverage HTML report (`utplsql.coverage.htmlReport`) is no longer rendered in an
+  extension-host webview. `ut_coverage_html_reporter`'s output is assembled by the database from
+  database-derived text (schema/object names, verbatim source lines) that utPLSQL does not escape,
+  so on a shared schema it is not necessarily content the viewer wrote themselves. It is now
+  written to a temporary file with a hardened CSP and offered via a notification (**Open in
+  Browser** / **Save As…**) instead — a browser tab has no `acquireVsCodeApi()` to reach and no
+  extension UI to impersonate. The report no longer opens automatically beside the editor, and now
+  opens in the OS browser instead of inside VS Code.
 
 ## [0.1.0] - 2026-08-31
 
