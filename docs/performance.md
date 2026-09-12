@@ -106,11 +106,10 @@ None of the automated levels above touch the actual VS Code Test Explorer
 UI — `materializeLevel` (`src/testing/controller.ts`) is built directly
 against `vscode.TestController`/`vscode.TestItem`, so measuring the real
 tree view needs a real Extension Development Host, not headless mocha.
-`test/e2e/testExplorer.e2e.test.ts` now covers the one scenario that
-actually needed this level (see Findings and [Open
-follow-ups](#open-follow-ups) for what it doesn't cover yet — filtering,
-cancellation, coverage runs). For anything beyond that, or to eyeball the
-tree instead of asserting on it, check manually:
+`test/e2e/testExplorer.e2e.test.ts` now covers the scenarios that actually
+needed this level — see Findings and [Open follow-ups](#open-follow-ups)
+for what it doesn't cover yet (coverage runs). For anything beyond that, or
+to eyeball the tree instead of asserting on it, check manually:
 
 1. `npm run perf:generate`, then F5 (Extension Development Host) against a
    connection profile pointed at the same schema.
@@ -209,8 +208,9 @@ four concrete performance concerns. Two are now fixed, two remain:
 ## Open follow-ups
 
 - An automated `@vscode/test-electron` level for the real tree view (see
-  the manual checklist above) — see
-  `test/e2e/testExplorer.e2e.test.ts` for the first one, covering the
-  lazy-materialization/run-resolution fix above; extending it to filtering,
-  cancellation, and coverage runs is still open.
+  the manual checklist above) — `test/e2e/testExplorer.e2e.test.ts` now
+  covers the lazy-materialization/run-resolution fix, tag-scoped (`a_tags`)
+  runs leaving untagged tests addressable, and cancellation leaving the
+  pool/tree usable for a subsequent run. Coverage runs (`runCoverage`) are
+  still open.
 - Item 2 above (one round-trip per streamed event) is accepted, not open.
