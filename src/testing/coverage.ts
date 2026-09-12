@@ -375,6 +375,17 @@ export async function loadDetailedCoverage(
  * offerAdditionalCoverageFile save-dialog flow leaves its target file
  * alone — the OS reclaims its own temp directory on its own schedule, and
  * a coverage report is not sensitive enough to warrant more than that.
+ *
+ * Only the write is awaited, not the notification/open/save that follows —
+ * this function's caller (runCoverage) awaits it before calling run.end(),
+ * and the original webview version never made the TestRun's completion
+ * depend on anything the user does with the result: showHtmlReport() used
+ * to be fire-and-forget and synchronous, opening the panel and returning
+ * immediately. Awaiting the full interactive flow here (button choice, then
+ * whichever of openExternal/showSaveDialog it leads to) would regress that:
+ * the Test Explorer would show the run as still in progress for as long as
+ * an unanswered "report is ready" notification sits on screen — unlike a
+ * webview opening instantly, that time is unbounded.
  */
 async function showHtmlReport(ctx: UtplsqlContext, html: string): Promise<void> {
     const hardened = withContentSecurityPolicy(html);
@@ -385,17 +396,29 @@ async function showHtmlReport(ctx: UtplsqlContext, html: string): Promise<void> 
 
     const openInBrowser = 'Open in Browser';
     const saveAs = 'Save As…';
-    const choice = await vscode.window.showInformationMessage('utPLSQL: coverage HTML report is ready.', openInBrowser, saveAs);
-    if (choice === openInBrowser) {
-        await vscode.env.openExternal(tempUri);
-    } else if (choice === saveAs) {
-        const target = await vscode.window.showSaveDialog({
-            filters: { 'HTML report': ['html'] },
-            saveLabel: 'Save Coverage HTML Report'
+    void vscode.window
+        .showInformationMessage('utPLSQL: coverage HTML report is ready.', openInBrowser, saveAs)
+        .then(async (choice) => {
+            if (choice === openInBrowser) {
+                await vscode.env.openExternal(tempUri);
+            } else if (choice === saveAs) {
+                const target = await vscode.window.showSaveDialog({
+                    filters: { 'HTML report': ['html'] },
+                    saveLabel: 'Save Coverage HTML Report'
+                });
+                if (target) {
+                    await vscode.workspace.fs.writeFile(target, buffer);
+                    ctx.output.appendLine(`utPLSQL: coverage HTML report saved to ${target.fsPath}`);
+                }
+            }
+        })
+        .then(undefined, (err: unknown) => {
+            // Same "don't take the extension host down over a best-effort
+            // follow-up action" reasoning as runProfile.ts's producePromise
+            // guard in the test support code this issue's integration test
+            // extends — nothing awaits this chain, so an unhandled rejection
+            // here would otherwise surface as an unhandled rejection warning
+            // instead of a normal, attributable output-channel line.
+            ctx.output.appendLine(`utPLSQL: coverage HTML report — opening/saving failed: ${String(err)}`);
         });
-        if (target) {
-            await vscode.workspace.fs.writeFile(target, buffer);
-            ctx.output.appendLine(`utPLSQL: coverage HTML report saved to ${target.fsPath}`);
-        }
-    }
 }
