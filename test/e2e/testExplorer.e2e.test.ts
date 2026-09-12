@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { getTestPool, closeTestPool } from '../integration/support/db';
 import { installFixture } from '../integration/support/fixture';
@@ -9,6 +12,9 @@ import { runTests as runControllerTests } from '../../src/testing/runHandler';
 const EXTENSION_ID = 'paddi35.utplsql-for-vscode';
 const PROFILE_NAME = 'e2e-test';
 const PACKAGE_LABEL = 'utplsql-vsc integration fixture';
+const TNS_PROFILE_NAME = 'e2e-test-tns-scope';
+/** Must match test/e2e/runTests.ts's TNS_ALIAS_ISSUE_12 — see that file's doc comment. */
+const TNS_ALIAS_ISSUE_12 = 'UTPLSQL_E2E_TNS_ALIAS';
 
 function findChildByLabel(collection: vscode.TestItemCollection, label: string): vscode.TestItem | undefined {
     let found: vscode.TestItem | undefined;
@@ -263,13 +269,87 @@ async function testUntracedRunKeepsOutputChannelSmall(ctx: UtplsqlContext, pkg: 
 }
 
 /**
+ * Regression case for issue #12: resolveTnsAdminDir() (src/db/tnsnames.ts)
+ * used to fall back to sqldeveloper.connections.tnsConfiguration.path via
+ * plain get(), which does not distinguish a global value from a workspace
+ * one. That key belongs to a different extension (Oracle SQL Developer for
+ * VSCode), whose declared scope this extension does not control, so a
+ * workspace's own .vscode/settings.json could set it — redirecting
+ * oracledb's configDir, and with it which tnsnames.ora a TNS-alias connect
+ * string resolves against, at a directory the workspace chose. Because the
+ * pool is then opened with the profile's real stored password, that is
+ * silent credential exfiltration to whatever host the poisoned
+ * tnsnames.ora names, triggered merely by opening the Testing view on a
+ * trusted-looking workspace.
+ *
+ * This reproduces exactly that shape: TNS_ADMIN (an environment variable, so
+ * the workspace cannot touch it — see runTests.ts's writeLegitTnsAdminDir)
+ * legitimately resolves TNS_ALIAS_ISSUE_12 to the real test container,
+ * while a workspace-scoped sqldeveloper.connections.tnsConfiguration.path
+ * redefines the *same* alias to an unroutable address (192.0.2.0/24 is
+ * reserved for documentation by RFC 5737 and guaranteed never to route). A
+ * profile whose connectString is the bare alias should still resolve
+ * through TNS_ADMIN and discover its schema/package normally; before the
+ * fix, get() would have returned the poisoned workspace value first and
+ * this would instead fail (or hang) trying to reach the unroutable host.
+ */
+async function testWorkspaceScopedSqlDeveloperTnsPathIsIgnored(ctx: UtplsqlContext, user: string, password: string, owner: string): Promise<void> {
+    const poisonedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'utplsql-e2e-poisoned-tns-'));
+    try {
+        const poisonedTnsnames =
+            `${TNS_ALIAS_ISSUE_12} =\n` +
+            `  (DESCRIPTION =\n` +
+            `    (ADDRESS = (PROTOCOL = TCP)(HOST = 192.0.2.1)(PORT = 1521))\n` +
+            `    (CONNECT_DATA = (SERVICE_NAME = POISON))\n` +
+            `  )\n`;
+        fs.writeFileSync(path.join(poisonedDir, 'tnsnames.ora'), poisonedTnsnames, 'utf8');
+
+        await vscode.workspace
+            .getConfiguration('sqldeveloper')
+            .update('connections.tnsConfiguration.path', poisonedDir, vscode.ConfigurationTarget.Workspace);
+
+        await vscode.workspace.getConfiguration('utplsql').update(
+            'connections',
+            [
+                { name: PROFILE_NAME, user, connectString: process.env.UTPLSQL_IT_CONNECT_STRING ?? 'localhost:1521/FREEPDB1', defaultSchema: owner },
+                { name: TNS_PROFILE_NAME, user, connectString: TNS_ALIAS_ISSUE_12, defaultSchema: owner }
+            ],
+            vscode.ConfigurationTarget.Global
+        );
+        await ctx.secrets.store(`utplsql.password.${TNS_PROFILE_NAME}`, password);
+
+        await resolve(ctx.controller, undefined);
+        const root = findChildByLabel(ctx.controller.items, TNS_PROFILE_NAME);
+        assert.ok(root, `no root TestItem for profile '${TNS_PROFILE_NAME}'`);
+
+        await resolve(ctx.controller, root);
+        const schema = findChildByLabel(root.children, owner);
+        assert.ok(
+            schema,
+            `no schema TestItem for owner '${owner}' via the TNS-alias profile — the pool likely tried to connect through the poisoned, workspace-scoped SQL Developer path instead of falling through to TNS_ADMIN`
+        );
+
+        await resolve(ctx.controller, schema);
+        const pkg = findChildByLabel(schema.children, PACKAGE_LABEL);
+        assert.ok(pkg, `fixture package '${PACKAGE_LABEL}' not found via the TNS-alias profile`);
+    } finally {
+        await vscode.workspace
+            .getConfiguration('sqldeveloper')
+            .update('connections.tnsConfiguration.path', undefined, vscode.ConfigurationTarget.Workspace);
+        fs.rmSync(poisonedDir, { recursive: true, force: true });
+    }
+}
+
+/**
  * End-to-end regression suite run against a real Oracle+utPLSQL instance and
  * a real VS Code extension host (not a mock `vscode` module) via
  * @vscode/test-electron — see test/e2e/runTests.ts for how this file is
  * launched. Covers the tree-materialization/run-resolution fixes, a
- * tag-scoped run against a real reporter, cancellation, and (issue #23) that
- * an untraced run's output-channel footprint stays small; see
- * docs/performance.md's Findings/Open follow-ups.
+ * tag-scoped run against a real reporter, cancellation, (issue #23) that
+ * an untraced run's output-channel footprint stays small, and (issue #12)
+ * that a workspace-scoped SQL Developer TNS path cannot redirect a
+ * credentialed connection; see docs/performance.md's Findings/Open
+ * follow-ups.
  */
 export async function run(): Promise<void> {
     const pool = await getTestPool();
@@ -319,7 +399,11 @@ export async function run(): Promise<void> {
             ['a tag-scoped run resolves an unexpanded package', () => testTagScopedRunResolvesAnUnexpandedPackage(ctx, pkg!)],
             ['running a package attaches results to every test and survives re-resolution', () => testPackageAttachesResultsAndSurvivesReResolution(ctx, pkg!)],
             ['cancelling a run leaves the pool/tree usable for the next one', () => testCancellationLeavesStateUsable(ctx, pkg!)],
-            ['an untraced run keeps the output channel small', () => testUntracedRunKeepsOutputChannelSmall(ctx, pkg!)]
+            ['an untraced run keeps the output channel small', () => testUntracedRunKeepsOutputChannelSmall(ctx, pkg!)],
+            [
+                'a workspace-scoped SQL Developer TNS path is ignored in favour of TNS_ADMIN (issue #12)',
+                () => testWorkspaceScopedSqlDeveloperTnsPathIsIgnored(ctx, user, password, owner)
+            ]
         ];
 
         const failures: string[] = [];
