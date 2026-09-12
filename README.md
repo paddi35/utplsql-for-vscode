@@ -165,12 +165,12 @@ maintainers — the bugs in this extension are mine.
 - `utplsql.connections.tnsAdminPath`'s fallback to the Oracle SQL Developer extension's
   `sqldeveloper.connections.tnsConfiguration.path` only honours a value set at user/global level,
   never one from a workspace, since that setting's scope belongs to that extension and is not
-  ours to restrict. Without that check, a workspace could still redirect `configDir` — and with
-  it, which host a stored-password connection actually reaches — despite our own settings being
-  machine-scoped.
-- `utplsql.perf.reportFile` is additionally validated in `src/perf.ts`: even a value configured at
-  user/machine level is only written to if it resolves inside an open workspace folder, so a
-  mistyped or unexpected path can't append to an unrelated file elsewhere on disk.
+  ours to restrict. Without that check, a workspace could still redefine the TNS alias a
+  stored-password connection profile names and redirect that connection to another host, despite
+  our own settings being machine-scoped.
+- `utplsql.perf.reportFile` is additionally validated at write time: even a value configured at
+  user/machine level is only used if it resolves inside an open workspace folder, so a mistyped or
+  unexpected path can't append to an unrelated file elsewhere on disk.
 - The extension is disabled in [untrusted workspaces](https://code.visualstudio.com/docs/editor/workspace-trust).
 
 Found a security issue? Please report it via
