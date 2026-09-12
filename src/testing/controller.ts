@@ -9,6 +9,7 @@ import { parseId, pathId, rootId, schemaId } from './ids';
 import { MetaStore, UtplsqlContext } from './model';
 import { runTests } from './runHandler';
 import { runCoverage, loadDetailedCoverage } from './coverage';
+import { measure, setPerfOutputChannel } from '../perf';
 import { runReporterExport } from './reporterProfile';
 import { getCachedVersion, clearVersionCache } from '../db/versionCache';
 
@@ -70,7 +71,7 @@ async function fetchSuiteRows(profile: string): Promise<SuiteInfoRow[]> {
                 `utPLSQL ${version.raw} is too old (needs >= 3.1.3 for get_suites_info). Extension stays inactive for '${profile}'.`
             );
         }
-        const rows = await dao.getSuitesInfo(conn);
+        const rows = await measure('getSuitesInfo', () => dao.getSuitesInfo(conn), { profile });
         suitesCache.set(profile, rows);
         return rows;
     } finally {
@@ -139,7 +140,7 @@ async function resolveVirtualTypes(
     }
     const conn = await getConnection(cfg, secrets);
     try {
-        return await dao.getPackageObjectTypes(conn, owner, names);
+        return await measure('getPackageObjectTypes', () => dao.getPackageObjectTypes(conn, owner, names), { names: names.length });
     } finally {
         await conn.close();
     }
@@ -240,6 +241,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
     const controller = vscode.tests.createTestController('utplsql', 'utPLSQL');
     const meta = new MetaStore();
     const output = vscode.window.createOutputChannel('utPLSQL');
+    setPerfOutputChannel(output);
     const ctx: UtplsqlContext = { controller, meta, output, secrets: extCtx.secrets, sourceIndex };
 
     const reportResolveError = (item: vscode.TestItem, err: unknown): void => {
@@ -327,7 +329,12 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
                 const forOwner = rows.filter((r) => r.objectOwner.toUpperCase() === owner.toUpperCase());
                 const index = childrenIndexFor(parsed.profile, owner, forOwner);
                 const levelKey = parsed.kind === 'schema' ? '' : parsed.suitepath;
-                await materializeLevel(controller, meta, sourceIndex, item, parsed.profile, owner, index.get(levelKey) ?? [], index, extCtx.secrets);
+                const rowsAtLevel = index.get(levelKey) ?? [];
+                await measure(
+                    'buildSchemaTree',
+                    () => materializeLevel(controller, meta, sourceIndex, item, parsed.profile, owner, rowsAtLevel, index, extCtx.secrets),
+                    { owner, level: levelKey || '(top)', rows: rowsAtLevel.length }
+                );
             } catch (err) {
                 reportResolveError(item, err);
             }

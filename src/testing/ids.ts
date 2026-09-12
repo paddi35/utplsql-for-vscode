@@ -68,14 +68,27 @@ export interface OwnedPath {
     suitepath: string;
 }
 
-function isCoveredBy(candidate: OwnedPath, ancestor: OwnedPath): boolean {
-    if (candidate.owner !== ancestor.owner) {
-        return false;
+/**
+ * Whether some proper dot-separated prefix of `suitepath` (i.e. an ancestor
+ * suite/context path, not just any string sharing a prefix — "suite1x" is
+ * not covered by "suite1") is itself a selected path for the same owner.
+ * Walking up by trimming one path segment at a time is O(depth) per
+ * candidate instead of comparing against every other selected path, so the
+ * whole dedup is O(n * depth) rather than O(n^2) — depth (suite/context
+ * nesting) stays small and roughly constant as the selection grows, unlike
+ * the old unique.some(isCoveredBy) scan over the full set for every entry.
+ */
+function hasSelectedAncestor(suitepath: string, selectedForOwner: ReadonlySet<string>): boolean {
+    let path = suitepath;
+    let dotIdx = path.lastIndexOf('.');
+    while (dotIdx !== -1) {
+        path = path.slice(0, dotIdx);
+        if (selectedForOwner.has(path)) {
+            return true;
+        }
+        dotIdx = path.lastIndexOf('.');
     }
-    if (candidate.suitepath === ancestor.suitepath) {
-        return false;
-    }
-    return candidate.suitepath.startsWith(`${ancestor.suitepath}.`);
+    return false;
 }
 
 /**
@@ -85,7 +98,16 @@ function isCoveredBy(candidate: OwnedPath, ancestor: OwnedPath): boolean {
  */
 export function dedupPathList(paths: OwnedPath[]): OwnedPath[] {
     const unique = dedupeExact(paths);
-    return unique.filter((candidate) => !unique.some((other) => isCoveredBy(candidate, other)));
+    const selectedByOwner = new Map<string, Set<string>>();
+    for (const p of unique) {
+        const set = selectedByOwner.get(p.owner);
+        if (set) {
+            set.add(p.suitepath);
+        } else {
+            selectedByOwner.set(p.owner, new Set([p.suitepath]));
+        }
+    }
+    return unique.filter((candidate) => !hasSelectedAncestor(candidate.suitepath, selectedByOwner.get(candidate.owner)!));
 }
 
 function dedupeExact(paths: OwnedPath[]): OwnedPath[] {

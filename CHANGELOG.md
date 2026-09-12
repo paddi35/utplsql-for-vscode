@@ -33,6 +33,9 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
   `to_match`, `to_be_like`, `to_contain`, `to_have_count`, a cursor `to_equal` with the
   include/exclude/unordered modifiers, JSON `to_equal`, `ut.fail`, and a verified
   `ut.set_nls`/`ut.reset_nls` pattern).
+- `utplsql.trace` and `utplsql.perf.enabled`/`utplsql.perf.reportFile` add opt-in, verbose
+  per-event logging and timing instrumentation for discovery/run, off by default (see
+  `docs/performance.md`).
 
 ### Changed
 

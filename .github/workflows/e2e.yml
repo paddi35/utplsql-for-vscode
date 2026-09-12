@@ -1,0 +1,75 @@
+name: E2E Tests
+
+# Deliberately kept off every push/PR, same reasoning as integration.yml and
+# performance.yml: this launches a real VS Code Extension Development Host
+# (via @vscode/test-electron) against a real Oracle instance, which is
+# slower and more fragile than the unit suite and does not belong on the
+# critical path of the normal dev/review loop. Triggerable on demand, plus
+# a weekly run so a regression in the tree-materialization/run-resolution
+# behavior (see docs/performance.md's Findings) still surfaces.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 5 * * 1'
+
+jobs:
+  e2e-tests:
+    runs-on: ubuntu-latest
+    env:
+      COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+
+      # ubuntu-latest ships without xvfb by default; @vscode/test-electron
+      # launches a real (headed) VS Code window that needs an X server even
+      # though nothing is actually displayed on a CI runner.
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Build Oracle + utPLSQL image
+        run: docker compose build
+
+      - name: Start Oracle + utPLSQL container
+        run: docker compose up -d
+
+      - name: Wait for database to become healthy
+        run: |
+          docker compose logs -f oracle-utplsql &
+          LOG_PID=$!
+          trap 'kill "$LOG_PID" 2>/dev/null' EXIT
+          timeout 600 bash -c '
+            until [ "$(docker inspect -f "{{.State.Health.Status}}" oracle-utplsql 2>/dev/null)" = "healthy" ]; do
+              sleep 5
+            done
+          '
+
+      - name: Build the extension
+        run: npm run build
+
+      # test:e2e's own pretest hook builds the e2e test bundle (see
+      # package.json's pretest:e2e).
+      - name: Run e2e tests
+        run: xvfb-run -a npm run test:e2e
+        env:
+          UTPLSQL_IT_USER: ut3
+          UTPLSQL_IT_PASSWORD: oracle
+          UTPLSQL_IT_CONNECT_STRING: localhost:1521/FREEPDB1
+
+      - name: Container logs
+        if: always()
+        run: docker compose logs
+
+      - name: Tear down containers
+        if: always()
+        run: docker compose down -v
