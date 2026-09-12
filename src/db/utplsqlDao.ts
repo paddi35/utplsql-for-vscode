@@ -38,7 +38,8 @@ export interface SuiteInfoRow {
     objectName: string;
     itemName: string;
     itemDescription?: string;
-    itemType: 'UT_SUITE' | 'UT_SUITE_CONTEXT' | 'UT_TEST';
+    /** UT_LOGICAL_SUITE is a --%suitepath(...) grouping node, not a real suite/context/test — see parseItemType's doc comment. */
+    itemType: 'UT_SUITE' | 'UT_SUITE_CONTEXT' | 'UT_TEST' | 'UT_LOGICAL_SUITE';
     itemLineNo?: number;
     path: string;
     disabledFlag: boolean;
@@ -82,23 +83,53 @@ export async function getVersion(conn: Connection): Promise<{ raw: string; norma
     return { raw, normalized: normalizeVersion(raw) };
 }
 
-let dbaViewAccessible: boolean | undefined;
+/**
+ * dba_/all_ view-prefix probe result, keyed by connection profile — mirrors
+ * versionCache.ts's identically-shaped cache for ut.version. A bare
+ * module-level boolean here used to let whichever profile happened to probe
+ * first decide the view prefix for every *other* profile for the rest of
+ * the session: the Test Explorer builds one root per connection profile,
+ * and probing is triggered by whichever's includes()/getPackageObjectTypes()/
+ * getObjectSource() call happens to run first. An unprivileged profile
+ * probed second inherited a cached `true` and failed every dba_*-view query
+ * with ORA-00942; a privileged profile probed second inherited a cached
+ * `false` and silently lost coverage scope with no error at all — the worse
+ * of the two, since dependencies visible only via dba_dependencies just
+ * dropped out (issue #15). Kept in this file rather than moved next to
+ * versionCache's cache: versionCache.ts already imports this module for
+ * dao.getVersion(), and includes()/getPackageObjectTypes()/getObjectSource()
+ * below need this cache directly, so moving it there would make the two
+ * modules import each other.
+ */
+const dbaViewAccessible = new Map<string, boolean>();
 
-export async function isDbaViewAccessible(conn: Connection): Promise<boolean> {
-    if (dbaViewAccessible !== undefined) {
-        return dbaViewAccessible;
+export async function isDbaViewAccessible(conn: Connection, profile: string): Promise<boolean> {
+    const cached = dbaViewAccessible.get(profile);
+    if (cached !== undefined) {
+        return cached;
     }
+    let accessible: boolean;
     try {
         await conn.execute(`SELECT 1 FROM dba_objects WHERE 1 = 2 UNION ALL SELECT 1 FROM dual WHERE 1 = 2`);
-        dbaViewAccessible = true;
+        accessible = true;
     } catch {
-        dbaViewAccessible = false;
+        accessible = false;
     }
-    return dbaViewAccessible;
+    dbaViewAccessible.set(profile, accessible);
+    return accessible;
 }
 
-export async function getDbaView(conn: Connection): Promise<'dba_' | 'all_'> {
-    return (await isDbaViewAccessible(conn)) ? 'dba_' : 'all_';
+export async function getDbaView(conn: Connection, profile: string): Promise<'dba_' | 'all_'> {
+    return (await isDbaViewAccessible(conn, profile)) ? 'dba_' : 'all_';
+}
+
+/** Clears the dba_/all_ probe cache for one profile, or every profile when omitted — call alongside clearVersionCache on refresh/profile removal so a mid-session grant change or a stale probe doesn't survive it. */
+export function clearDbaViewCache(profile?: string): void {
+    if (profile) {
+        dbaViewAccessible.delete(profile);
+    } else {
+        dbaViewAccessible.clear();
+    }
 }
 
 export async function hasSuites(conn: Connection, owner: string): Promise<boolean> {
@@ -164,30 +195,79 @@ export function collectTags(rows: Array<Pick<SuiteInfoRow, 'tags'>>): string[] {
     return [...tags].sort();
 }
 
-export async function getSuitesInfo(conn: Connection, owner?: string, pkg?: string): Promise<SuiteInfoRow[]> {
+const KNOWN_ITEM_TYPES: ReadonlySet<string> = new Set(['UT_SUITE', 'UT_SUITE_CONTEXT', 'UT_TEST', 'UT_LOGICAL_SUITE']);
+
+/**
+ * Narrows a raw item_type value from ut_runner.get_suites_info to the
+ * declared SuiteInfoRow union, or undefined for anything getSuitesInfo has
+ * never seen it return. Replaces a blind `as SuiteInfoRow['itemType']` cast
+ * that silently accepted whatever the database sent back — which is exactly
+ * how UT_LOGICAL_SUITE (the --%suitepath grouping node's item_type, ~40% of
+ * the perf fixture's packages per docs/performance.md's "Findings") went
+ * undeclared for as long as it did: the cast asserted the union was
+ * complete instead of ever letting the compiler, or a log line, catch that
+ * it wasn't. getSuitesInfo treats an undefined result as a suite — the same
+ * treatment every non-UT_TEST value already gets via isTestItem below — but
+ * only after reporting the raw value through its onUnknownItemType
+ * callback, so a fifth item_type a future utPLSQL version introduces is
+ * visible instead of silently absorbed again.
+ */
+export function parseItemType(value: unknown): SuiteInfoRow['itemType'] | undefined {
+    const s = String(value);
+    return KNOWN_ITEM_TYPES.has(s) ? (s as SuiteInfoRow['itemType']) : undefined;
+}
+
+/**
+ * Whether a SuiteInfoRow is a leaf test rather than a suite/context/
+ * --%suitepath grouping node — the one condition resolveLocation
+ * (controller.ts) branches on. A --%suitepath group has no object_name of
+ * its own to look up (get_suites_info reuses the group's path segment
+ * there, not a real package), so routing it through the same
+ * lookupPackage(row.objectName) call every other non-test row uses is
+ * deliberate: SourceIndex.lookup() returns undefined for a name that never
+ * matched a real package, which is exactly "no location for this row" —
+ * the correct outcome for a node that isn't backed by one object, not a
+ * false match.
+ */
+export function isTestItem(itemType: SuiteInfoRow['itemType']): boolean {
+    return itemType === 'UT_TEST';
+}
+
+export async function getSuitesInfo(
+    conn: Connection,
+    owner?: string,
+    pkg?: string,
+    onUnknownItemType?: (raw: unknown) => void
+): Promise<SuiteInfoRow[]> {
     const result = await conn.execute<Record<string, unknown>>(
         `SELECT object_owner, object_name, item_name, item_description, item_type,
                 item_line_no, path, disabled_flag, disabled_reason, tags
            FROM TABLE(ut_runner.get_suites_info(upper(:owner), upper(:pkg)))`,
         { owner: owner ?? null, pkg: pkg ?? null }
     );
-    return (result.rows ?? []).map((r) => ({
-        objectOwner: String(r.OBJECT_OWNER),
-        objectName: String(r.OBJECT_NAME),
-        itemName: String(r.ITEM_NAME),
-        itemDescription: r.ITEM_DESCRIPTION ? String(r.ITEM_DESCRIPTION) : undefined,
-        itemType: String(r.ITEM_TYPE) as SuiteInfoRow['itemType'],
-        itemLineNo: r.ITEM_LINE_NO !== null && r.ITEM_LINE_NO !== undefined ? Number(r.ITEM_LINE_NO) : undefined,
-        path: String(r.PATH),
-        disabledFlag: parseDisabledFlag(r.DISABLED_FLAG),
-        disabledReason: r.DISABLED_REASON ? String(r.DISABLED_REASON) : undefined,
-        tags: r.TAGS ? String(r.TAGS) : undefined
-    }));
+    return (result.rows ?? []).map((r) => {
+        const itemType = parseItemType(r.ITEM_TYPE);
+        if (itemType === undefined) {
+            onUnknownItemType?.(r.ITEM_TYPE);
+        }
+        return {
+            objectOwner: String(r.OBJECT_OWNER),
+            objectName: String(r.OBJECT_NAME),
+            itemName: String(r.ITEM_NAME),
+            itemDescription: r.ITEM_DESCRIPTION ? String(r.ITEM_DESCRIPTION) : undefined,
+            itemType: itemType ?? 'UT_SUITE',
+            itemLineNo: r.ITEM_LINE_NO !== null && r.ITEM_LINE_NO !== undefined ? Number(r.ITEM_LINE_NO) : undefined,
+            path: String(r.PATH),
+            disabledFlag: parseDisabledFlag(r.DISABLED_FLAG),
+            disabledReason: r.DISABLED_REASON ? String(r.DISABLED_REASON) : undefined,
+            tags: r.TAGS ? String(r.TAGS) : undefined
+        };
+    });
 }
 
-/** Objects reachable via {dba|all}_dependencies from the run's covered objects, for coverage scoping. */
-export async function includes(conn: Connection, owner: string, name: string): Promise<Array<{ owner: string; name: string }>> {
-    const view = await getDbaView(conn);
+/** Objects reachable via {dba|all}_dependencies from the run's covered objects, for coverage scoping. `profile` selects the dba_/all_ probe cache entry (see getDbaView) — it does not otherwise affect the query. */
+export async function includes(conn: Connection, owner: string, name: string, profile: string): Promise<Array<{ owner: string; name: string }>> {
+    const view = await getDbaView(conn, profile);
     const exclusionCsv = EXCLUDED_SCHEMA_PATTERNS.map((s) => `'${s}'`).join(', ');
     const result = await conn.execute<Record<string, unknown>>(
         `SELECT DISTINCT referenced_owner AS owner, referenced_name AS name
@@ -207,14 +287,16 @@ export async function includes(conn: Connection, owner: string, name: string): P
  * spec-only package has none). A name absent from the result has neither —
  * it isn't a package/package body in this schema at all. Used to build a
  * coverage file mapping, or a Test Explorer navigation target, for objects
- * with no local workspace file — see workspace/virtualSource.ts.
+ * with no local workspace file — see workspace/virtualSource.ts. `profile`
+ * selects the dba_/all_ probe cache entry (see getDbaView) — it does not
+ * otherwise affect the query.
  */
-export async function getPackageObjectTypes(conn: Connection, owner: string, names: string[]): Promise<Map<string, 'PACKAGE BODY' | 'PACKAGE'>> {
+export async function getPackageObjectTypes(conn: Connection, owner: string, names: string[], profile: string): Promise<Map<string, 'PACKAGE BODY' | 'PACKAGE'>> {
     const result = new Map<string, 'PACKAGE BODY' | 'PACKAGE'>();
     if (names.length === 0) {
         return result;
     }
-    const view = await getDbaView(conn);
+    const view = await getDbaView(conn, profile);
     const binds: Record<string, string> = { owner };
     const bindNames = names.map((n, i) => {
         const key = `n${i}`;
@@ -239,13 +321,13 @@ export async function getPackageObjectTypes(conn: Connection, owner: string, nam
     return result;
 }
 
-export async function getPackageObjectType(conn: Connection, owner: string, name: string): Promise<'PACKAGE BODY' | 'PACKAGE' | undefined> {
-    return (await getPackageObjectTypes(conn, owner, [name])).get(name.toUpperCase());
+export async function getPackageObjectType(conn: Connection, owner: string, name: string, profile: string): Promise<'PACKAGE BODY' | 'PACKAGE' | undefined> {
+    return (await getPackageObjectTypes(conn, owner, [name], profile)).get(name.toUpperCase());
 }
 
-/** Full source text of a PACKAGE/PACKAGE BODY, reassembled from {dba|all}_source in line order. */
-export async function getObjectSource(conn: Connection, owner: string, name: string, type: 'PACKAGE BODY' | 'PACKAGE'): Promise<string> {
-    const view = await getDbaView(conn);
+/** Full source text of a PACKAGE/PACKAGE BODY, reassembled from {dba|all}_source in line order. `profile` selects the dba_/all_ probe cache entry (see getDbaView) — it does not otherwise affect the query. */
+export async function getObjectSource(conn: Connection, owner: string, name: string, type: 'PACKAGE BODY' | 'PACKAGE', profile: string): Promise<string> {
+    const view = await getDbaView(conn, profile);
     const result = await conn.execute<Record<string, unknown>>(
         `SELECT text
            FROM ${view}source

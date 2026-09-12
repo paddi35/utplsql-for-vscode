@@ -12,8 +12,21 @@ import { runCoverage, loadDetailedCoverage } from './coverage';
 import { measure, setPerfOutputChannel } from '../perf';
 import { runReporterExport } from './reporterProfile';
 import { getCachedVersion, clearVersionCache } from '../db/versionCache';
+import { createSingleFlightCache } from './singleFlight';
+import { createObjectTypeCache } from './objectTypeCache';
 
-const suitesCache = new Map<string, SuiteInfoRow[]>();
+/**
+ * Single-flighted per-profile cache of the full get_suites_info row set (see
+ * singleFlight.ts). VS Code invokes resolveHandler concurrently for sibling
+ * Test Explorer items, and ensureSubtreeResolved (runHandler.ts) drives it
+ * again before every run — without in-flight de-duplication, each of those
+ * started its own ~27-59s getSuitesInfo round trip on the documented
+ * 1000-package fixture (issue #17).
+ */
+const suiteRowsCache = createSingleFlightCache<SuiteInfoRow[]>();
+
+/** Per (profile, owner) PACKAGE/PACKAGE BODY object-type cache backing resolveVirtualTypes below — see objectTypeCache.ts (issue #22). */
+const objectTypeCache = createObjectTypeCache();
 
 /**
  * Per (profile, owner), which SuiteInfoRow[] are the direct children of
@@ -22,7 +35,7 @@ const suitesCache = new Map<string, SuiteInfoRow[]>();
  * fallback rule the old eager buildSchemaTree used). Built once from the
  * already-fetched/cached `rows` and reused by every resolveHandler call for
  * that owner, so expanding node after node doesn't re-scan the full row set
- * each time. Cleared alongside suitesCache on refresh.
+ * each time. Cleared alongside suiteRowsCache on refresh.
  */
 const childrenIndexCache = new Map<string, Map<string, SuiteInfoRow[]>>();
 
@@ -54,29 +67,25 @@ function childrenIndexFor(profile: string, owner: string, forOwner: SuiteInfoRow
     return index;
 }
 
-async function fetchSuiteRows(profile: string): Promise<SuiteInfoRow[]> {
-    const cached = suitesCache.get(profile);
-    if (cached) {
-        return cached;
-    }
-    const cfg = getProfile(profile);
-    if (!cfg) {
-        return [];
-    }
-    const conn = await getConnection(cfg, ctxSecrets());
-    try {
-        const version = await getCachedVersion(conn, profile);
-        if (version.normalized < dao.VERSION_GET_SUITES_INFO) {
-            throw new Error(
-                `utPLSQL ${version.raw} is too old (needs >= 3.1.3 for get_suites_info). Extension stays inactive for '${profile}'.`
-            );
+function fetchSuiteRows(profile: string, onUnknownItemType: (raw: unknown) => void): Promise<SuiteInfoRow[]> {
+    return suiteRowsCache.get(profile, async () => {
+        const cfg = getProfile(profile);
+        if (!cfg) {
+            return [];
         }
-        const rows = await measure('getSuitesInfo', () => dao.getSuitesInfo(conn), { profile });
-        suitesCache.set(profile, rows);
-        return rows;
-    } finally {
-        await conn.close();
-    }
+        const conn = await getConnection(cfg, ctxSecrets());
+        try {
+            const version = await getCachedVersion(conn, profile);
+            if (version.normalized < dao.VERSION_GET_SUITES_INFO) {
+                throw new Error(
+                    `utPLSQL ${version.raw} is too old (needs >= 3.1.3 for get_suites_info). Extension stays inactive for '${profile}'.`
+                );
+            }
+            return await measure('getSuitesInfo', () => dao.getSuitesInfo(conn, undefined, undefined, onUnknownItemType), { profile });
+        } finally {
+            await conn.close();
+        }
+    });
 }
 
 let secretsRef: vscode.SecretStorage;
@@ -91,10 +100,9 @@ function pointAt(uri: vscode.Uri, itemLineNo: number | undefined): { uri: vscode
 }
 
 function resolveLocation(sourceIndex: SourceIndex, row: SuiteInfoRow): { uri: vscode.Uri; range: vscode.Range } | undefined {
-    const location =
-        row.itemType === 'UT_TEST'
-            ? sourceIndex.lookupProcedure(row.objectName, row.itemName)
-            : sourceIndex.lookupPackage(row.objectName);
+    const location = dao.isTestItem(row.itemType)
+        ? sourceIndex.lookupProcedure(row.objectName, row.itemName)
+        : sourceIndex.lookupPackage(row.objectName);
     if (!location) {
         return undefined;
     }
@@ -125,6 +133,15 @@ function resolveVirtualLocation(
     return pointAt(virtualSourceUri(profile, owner, row.objectName, type === 'PACKAGE BODY'), row.itemLineNo);
 }
 
+/**
+ * Resolves PACKAGE/PACKAGE BODY types for `names` under (profile, owner)
+ * through objectTypeCache (issue #22) instead of a fresh pooled connection
+ * and dao.getPackageObjectTypes call per invocation. materializeLevel below
+ * always passes the owner's *entire* distinct missing-name set here, not
+ * just the current level's — see objectTypeCache.ts's doc comment for why
+ * that is what makes "one round trip per owner" actually happen instead of
+ * "one (smaller) round trip per level".
+ */
 async function resolveVirtualTypes(
     secrets: vscode.SecretStorage,
     profile: string,
@@ -138,12 +155,36 @@ async function resolveVirtualTypes(
     if (!cfg) {
         return new Map();
     }
-    const conn = await getConnection(cfg, secrets);
-    try {
-        return await measure('getPackageObjectTypes', () => dao.getPackageObjectTypes(conn, owner, names), { names: names.length });
-    } finally {
-        await conn.close();
+    return objectTypeCache.resolve(profile, owner, names, async (toFetch) => {
+        const conn = await getConnection(cfg, secrets);
+        try {
+            return await measure('getPackageObjectTypes', () => dao.getPackageObjectTypes(conn, owner, toFetch, profile), { names: toFetch.length });
+        } finally {
+            await conn.close();
+        }
+    });
+}
+
+/**
+ * Every distinct objectName across *all* rows known for this owner (every
+ * bucket of the owner's children index, not just one level's rowsAtLevel)
+ * that has no local workspace source — the priming set resolveVirtualTypes
+ * needs to turn "one getPackageObjectTypes call per owner" from an
+ * aspiration into what actually happens (see objectTypeCache.ts). Pure
+ * in-memory work over an already-built index (no DB access itself), so
+ * recomputing it on every materializeLevel call for an owner is cheap; the
+ * cache it feeds is what makes the *DB* call happen at most once.
+ */
+function allMissingNamesForOwner(sourceIndex: SourceIndex, index: ReadonlyMap<string, SuiteInfoRow[]>): string[] {
+    const missing = new Set<string>();
+    for (const rows of index.values()) {
+        for (const row of rows) {
+            if (!resolveLocation(sourceIndex, row)) {
+                missing.add(row.objectName);
+            }
+        }
     }
+    return [...missing];
 }
 
 /**
@@ -190,7 +231,12 @@ async function materializeLevel(
             missingNames.add(row.objectName);
         }
     }
-    const virtualTypes = await resolveVirtualTypes(secrets, profile, owner, [...missingNames]);
+    // Only bother priming (and paying allMissingNamesForOwner's owner-wide
+    // scan) when this level actually needs a virtual-source lookup at all —
+    // an owner that's fully covered by local workspace files never triggers
+    // this, the same as before.
+    const virtualTypes =
+        missingNames.size > 0 ? await resolveVirtualTypes(secrets, profile, owner, allMissingNamesForOwner(sourceIndex, index)) : new Map<string, 'PACKAGE BODY' | 'PACKAGE'>();
 
     const expectedIds = new Set<string>();
     for (const row of rowsAtLevel) {
@@ -258,6 +304,11 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
         item.children.replace([errorItem]);
     };
 
+    /** getSuitesInfo's onUnknownItemType callback (see parseItemType in utplsqlDao.ts) — one line per unrecognised item_type actually observed, instead of the silent cast it replaces. */
+    const logUnknownItemType = (profile: string, raw: unknown): void => {
+        output.appendLine(`utPLSQL: getSuitesInfo for '${profile}' returned an unrecognised item_type '${String(raw)}', treating it as a suite`);
+    };
+
     controller.resolveHandler = async (item) => {
         if (!item) {
             for (const profile of readProfiles()) {
@@ -284,7 +335,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
                     if (await dao.hasSuites(conn, primary)) {
                         owners.add(primary);
                     }
-                    const rows = await fetchSuiteRows(parsed.profile);
+                    const rows = await fetchSuiteRows(parsed.profile, (raw) => logUnknownItemType(parsed.profile, raw));
                     rows.forEach((r) => owners.add(r.objectOwner.toUpperCase()));
                     if (owners.size === 0) {
                         reportResolveError(
@@ -325,7 +376,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
         if (parsed.kind === 'schema' || parsed.kind === 'path') {
             try {
                 const owner = parsed.owner;
-                const rows = await fetchSuiteRows(parsed.profile);
+                const rows = await fetchSuiteRows(parsed.profile, (raw) => logUnknownItemType(parsed.profile, raw));
                 const forOwner = rows.filter((r) => r.objectOwner.toUpperCase() === owner.toUpperCase());
                 const index = childrenIndexFor(parsed.profile, owner, forOwner);
                 const levelKey = parsed.kind === 'schema' ? '' : parsed.suitepath;
@@ -342,9 +393,11 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
     };
 
     controller.refreshHandler = async () => {
-        suitesCache.clear();
+        suiteRowsCache.clear();
         childrenIndexCache.clear();
+        objectTypeCache.clear();
         clearVersionCache();
+        dao.clearDbaViewCache();
         controller.items.forEach((root) => meta.deleteForProfile(parseId(root.id).profile));
         controller.items.replace([]);
         await controller.resolveHandler?.(undefined);

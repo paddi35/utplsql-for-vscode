@@ -171,7 +171,7 @@ async function resolveFileMappings(
     // Test Coverage panel still get something to point at.
     const dbTypeByKey = new Map<string, 'PACKAGE BODY' | 'PACKAGE'>();
     for (const [owner, names] of needsLookup) {
-        const types = await dao.getPackageObjectTypes(scopeConn, owner, [...names]);
+        const types = await dao.getPackageObjectTypes(scopeConn, owner, [...names], profile);
         types.forEach((type, objectName) => dbTypeByKey.set(`${owner}.${objectName}`, type));
     }
 
@@ -221,7 +221,7 @@ async function buildCoverageOptions(ctx: UtplsqlContext, profile: string, items:
             }
             owners.add(meta.owner);
             testObjects.set(`${meta.owner}.${meta.row.objectName}`, { owner: meta.owner, name: meta.row.objectName });
-            const deps = await dao.includes(scopeConn, meta.owner, meta.row.objectName);
+            const deps = await dao.includes(scopeConn, meta.owner, meta.row.objectName, profile);
             deps.forEach((d) => includeObjects.set(`${d.owner}.${d.name}`, d));
         }
 

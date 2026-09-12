@@ -53,7 +53,7 @@ export class VirtualSourceProvider implements vscode.TextDocumentContentProvider
         const conn = await pool.getConnection();
         try {
             const type = parsed.isBody ? 'PACKAGE BODY' : 'PACKAGE';
-            const source = await getObjectSource(conn, parsed.owner, parsed.name, type);
+            const source = await getObjectSource(conn, parsed.owner, parsed.name, type, parsed.profile);
             return source || `-- utPLSQL: no ${type} source found for ${parsed.owner}.${parsed.name}`;
         } finally {
             await conn.close();
