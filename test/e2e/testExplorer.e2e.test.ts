@@ -41,16 +41,66 @@ async function runOnPackage(
 }
 
 /**
+ * Two honest, distinct claims, not one — worth separating because it's easy
+ * to overstate what this covers:
+ *
+ * 1. groupRequest's ensureSubtreeResolved runs regardless of RunTestsOptions
+ *    (tags aren't even passed to groupRequest — only to runOneProfile, for
+ *    the actual a_tags SQL). So a tag-scoped run on a package that was
+ *    never individually expanded needs the exact same lazy-resolution fix
+ *    as an untagged one; this case runs first (see the `cases` list below),
+ *    while `pkg` still has 0 children, to actually exercise that. It
+ *    overlaps with testPackageAttachesResultsAndSurvivesReResolution below
+ *    on that front by design (defense in depth), not because it's proving
+ *    something novel about resolution.
+ * 2. What *is* novel here: this is the only case that runs a_tags against a
+ *    real reporter end-to-end. buildProduceSql's unit tests already assert
+ *    a_tags is bound as a plain varchar2 (not a ut_varchar2_list — see the
+ *    CHANGELOG entry for why that distinction mattered); this confirms
+ *    that SQL is also accepted and handled correctly by a live instance,
+ *    and that runOneProfile's "mark anything a_tags left unfinalized as
+ *    skipped" path (see its own doc comment) doesn't hang or throw.
+ *
+ * What this does *not* prove: that test_slow (the only test tagged 'slow')
+ * is the only one that actually ran, or that the others were specifically
+ * marked skipped — the public Testing API has no way to read a TestItem's
+ * run status back out, only whether the TestItem itself exists. The label
+ * assertions below are a floor (the tree didn't break), not a check on
+ * a_tags' actual scoping behavior.
+ */
+async function testTagScopedRunResolvesAnUnexpandedPackage(ctx: UtplsqlContext, pkg: vscode.TestItem): Promise<void> {
+    assert.equal(pkg.children.size, 0, 'fixture package must not already be individually expanded — that would invalidate this case');
+
+    const cts = new vscode.CancellationTokenSource();
+    try {
+        await runOnPackage(ctx, pkg, cts.token, ['slow']);
+    } finally {
+        cts.dispose();
+    }
+
+    const after = new Map<string, vscode.TestItem>();
+    collectSubtree(pkg, after);
+    assert.ok(after.size > 0, 'a tag-scoped run on an unexpanded package must still resolve its subtree, the same as an untagged run');
+    const labels = [...after.values()].map((i) => i.label);
+    assert.ok(labels.includes('sleeps briefly to exercise realtime event streaming'), "the tagged test's TestItem should exist after a tag-scoped run");
+    assert.ok(labels.includes('adds two numbers correctly'), "an untagged test's TestItem must still exist after a tag-scoped run");
+}
+
+/**
  * Reproduces the exact regression the lazy-tree-materialization fixes
  * addressed (see docs/performance.md's Findings): running a package that
  * was never individually expanded used to report zero results for any of
  * its tests (no matching TestItem for the streamed pre-test/post-test
  * events to attach status to), and re-resolving an already-run node used to
  * discard the TestItem objects a run had just attached results to.
+ *
+ * Deliberately does *not* assert `pkg.children.size === 0` beforehand: the
+ * tag-scoped case above already runs first specifically to exercise that
+ * precondition (see its own doc comment for why), and this case's actual
+ * claims — every test gets a TestItem, re-resolving keeps the same objects
+ * — hold regardless of what state `pkg` starts in.
  */
-async function testUnexpandedPackageAttachesResults(ctx: UtplsqlContext, pkg: vscode.TestItem): Promise<void> {
-    assert.equal(pkg.children.size, 0, 'fixture package must not already be individually expanded — that would invalidate this case');
-
+async function testPackageAttachesResultsAndSurvivesReResolution(ctx: UtplsqlContext, pkg: vscode.TestItem): Promise<void> {
     const expectedTestLabels = [
         'adds two numbers correctly',
         'fails on purpose to exercise the failed run state',
@@ -93,38 +143,6 @@ async function testUnexpandedPackageAttachesResults(ctx: UtplsqlContext, pkg: vs
 }
 
 /**
- * `utplsql.runWithTags` (and any run with RunTestsOptions.tags) scopes
- * a_tags server-side: ut_runner only ever streams pre-/post-test events for
- * tests carrying one of the chosen tags. runOneProfile's own doc comment
- * calls this out explicitly — every enqueued item that never received a
- * terminal event (because a_tags filtered it out, or because the run was
- * cancelled — see the next case) is marked run.skipped() afterward instead
- * of being left showing as permanently "enqueued". This exercises that same
- * groupRequest -> ensureSubtreeResolved -> reconcileTree pipeline under
- * that narrower scope: only test_slow carries the 'slow' tag, so it should
- * be the only test that actually executes, but every test's TestItem must
- * still exist and be addressable afterward — a_tags narrows what runs, not
- * what the tree knows about.
- */
-async function testTagFilteringLeavesUntaggedTestsAddressable(ctx: UtplsqlContext, pkg: vscode.TestItem): Promise<void> {
-    const cts = new vscode.CancellationTokenSource();
-    try {
-        await runOnPackage(ctx, pkg, cts.token, ['slow']);
-    } finally {
-        cts.dispose();
-    }
-
-    const after = new Map<string, vscode.TestItem>();
-    collectSubtree(pkg, after);
-    const labels = [...after.values()].map((i) => i.label);
-    assert.ok(labels.includes('sleeps briefly to exercise realtime event streaming'), "the tagged test's TestItem should exist after a tag-scoped run");
-    assert.ok(
-        labels.includes('adds two numbers correctly'),
-        "an untagged test's TestItem must still exist after a tag-scoped run that never executed it — a_tags narrows what ut_runner runs, not what the tree resolves"
-    );
-}
-
-/**
  * Cancelling mid-run must not hang runTests(), and must not leave the
  * connection pool or the Explorer tree in a state that breaks the next,
  * uncancelled run — the same concern test/integration/cancel.test.ts
@@ -161,9 +179,8 @@ async function testCancellationLeavesStateUsable(ctx: UtplsqlContext, pkg: vscod
  * End-to-end regression suite run against a real Oracle+utPLSQL instance and
  * a real VS Code extension host (not a mock `vscode` module) via
  * @vscode/test-electron — see test/e2e/runTests.ts for how this file is
- * launched. Covers the tree-materialization/run-resolution fixes, plus the
- * two scenarios (tag filtering, cancellation) that share their
- * enqueued-but-never-finalized handling with those fixes; see
+ * launched. Covers the tree-materialization/run-resolution fixes, a
+ * tag-scoped run against a real reporter, and cancellation; see
  * docs/performance.md's Findings/Open follow-ups.
  */
 export async function run(): Promise<void> {
@@ -205,9 +222,13 @@ export async function run(): Promise<void> {
         const pkg = findChildByLabel(schema.children, PACKAGE_LABEL);
         assert.ok(pkg, `fixture package '${PACKAGE_LABEL}' not found under the schema — did installFixture run?`);
 
+        // Order matters: the tag-scoped case needs `pkg` to still be
+        // unexpanded (0 children) when it starts, so it must run first —
+        // see its own doc comment. The other two cases don't depend on
+        // pkg's starting state.
         const cases: Array<[string, () => Promise<void>]> = [
-            ['running an unexpanded package attaches results to every test', () => testUnexpandedPackageAttachesResults(ctx, pkg!)],
-            ['a tag-scoped run keeps untagged tests addressable', () => testTagFilteringLeavesUntaggedTestsAddressable(ctx, pkg!)],
+            ['a tag-scoped run resolves an unexpanded package', () => testTagScopedRunResolvesAnUnexpandedPackage(ctx, pkg!)],
+            ['running a package attaches results to every test and survives re-resolution', () => testPackageAttachesResultsAndSurvivesReResolution(ctx, pkg!)],
             ['cancelling a run leaves the pool/tree usable for the next one', () => testCancellationLeavesStateUsable(ctx, pkg!)]
         ];
 
