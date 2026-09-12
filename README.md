@@ -78,7 +78,7 @@ entries to `files.associations` yourself for any extensions it doesn't already c
 | Setting | Default | Description |
 |---|---|---|
 | `utplsql.connections` | `[]` | Connection profiles (`name`, `user`, `connectString`, optional `defaultSchema`). Managed via the commands above; edit directly only if you know what you're doing. |
-| `utplsql.connections.tnsAdminPath` | `""` | Folder containing `tnsnames.ora`. Falls back to the Oracle SQL Developer extension's `sqldeveloper.connections.tnsConfiguration.path`, then `TNS_ADMIN`. If empty and you enter a TNS alias directly as the connect string, `node-oracledb` still resolves it itself at connect time. |
+| `utplsql.connections.tnsAdminPath` | `""` | Folder containing `tnsnames.ora`. Falls back to the Oracle SQL Developer extension's `sqldeveloper.connections.tnsConfiguration.path` — but only a user/machine-level value for it, never one set by a workspace, since that setting's scope belongs to that extension and is not ours to restrict — then to `TNS_ADMIN`. If empty and you enter a TNS alias directly as the connect string, `node-oracledb` still resolves it itself at connect time. |
 | `utplsql.discovery.languageIds` | `["sql", "oracle-sql"]` | Language IDs treated as PL/SQL source for discovery and parsing. |
 | `utplsql.run.randomOrder` | `false` | Run tests in a random order (`a_random_test_order`) instead of declaration order, to surface hidden order dependencies between tests. |
 | `utplsql.run.randomOrderSeed` | `0` | Seed for `utplsql.run.randomOrder`. `0` leaves the seed unset (a new one every run, not reproducible); a positive value reproduces the same order every run. |
