@@ -12,8 +12,17 @@ import { runCoverage, loadDetailedCoverage } from './coverage';
 import { measure, setPerfOutputChannel } from '../perf';
 import { runReporterExport } from './reporterProfile';
 import { getCachedVersion, clearVersionCache } from '../db/versionCache';
+import { createSingleFlightCache } from './singleFlight';
 
-const suitesCache = new Map<string, SuiteInfoRow[]>();
+/**
+ * Single-flighted per-profile cache of the full get_suites_info row set (see
+ * singleFlight.ts). VS Code invokes resolveHandler concurrently for sibling
+ * Test Explorer items, and ensureSubtreeResolved (runHandler.ts) drives it
+ * again before every run — without in-flight de-duplication, each of those
+ * started its own ~27-59s getSuitesInfo round trip on the documented
+ * 1000-package fixture (issue #17).
+ */
+const suiteRowsCache = createSingleFlightCache<SuiteInfoRow[]>();
 
 /**
  * Per (profile, owner), which SuiteInfoRow[] are the direct children of
@@ -22,7 +31,7 @@ const suitesCache = new Map<string, SuiteInfoRow[]>();
  * fallback rule the old eager buildSchemaTree used). Built once from the
  * already-fetched/cached `rows` and reused by every resolveHandler call for
  * that owner, so expanding node after node doesn't re-scan the full row set
- * each time. Cleared alongside suitesCache on refresh.
+ * each time. Cleared alongside suiteRowsCache on refresh.
  */
 const childrenIndexCache = new Map<string, Map<string, SuiteInfoRow[]>>();
 
@@ -54,29 +63,25 @@ function childrenIndexFor(profile: string, owner: string, forOwner: SuiteInfoRow
     return index;
 }
 
-async function fetchSuiteRows(profile: string, onUnknownItemType: (raw: unknown) => void): Promise<SuiteInfoRow[]> {
-    const cached = suitesCache.get(profile);
-    if (cached) {
-        return cached;
-    }
-    const cfg = getProfile(profile);
-    if (!cfg) {
-        return [];
-    }
-    const conn = await getConnection(cfg, ctxSecrets());
-    try {
-        const version = await getCachedVersion(conn, profile);
-        if (version.normalized < dao.VERSION_GET_SUITES_INFO) {
-            throw new Error(
-                `utPLSQL ${version.raw} is too old (needs >= 3.1.3 for get_suites_info). Extension stays inactive for '${profile}'.`
-            );
+function fetchSuiteRows(profile: string, onUnknownItemType: (raw: unknown) => void): Promise<SuiteInfoRow[]> {
+    return suiteRowsCache.get(profile, async () => {
+        const cfg = getProfile(profile);
+        if (!cfg) {
+            return [];
         }
-        const rows = await measure('getSuitesInfo', () => dao.getSuitesInfo(conn, undefined, undefined, onUnknownItemType), { profile });
-        suitesCache.set(profile, rows);
-        return rows;
-    } finally {
-        await conn.close();
-    }
+        const conn = await getConnection(cfg, ctxSecrets());
+        try {
+            const version = await getCachedVersion(conn, profile);
+            if (version.normalized < dao.VERSION_GET_SUITES_INFO) {
+                throw new Error(
+                    `utPLSQL ${version.raw} is too old (needs >= 3.1.3 for get_suites_info). Extension stays inactive for '${profile}'.`
+                );
+            }
+            return await measure('getSuitesInfo', () => dao.getSuitesInfo(conn, undefined, undefined, onUnknownItemType), { profile });
+        } finally {
+            await conn.close();
+        }
+    });
 }
 
 let secretsRef: vscode.SecretStorage;
@@ -346,7 +351,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
     };
 
     controller.refreshHandler = async () => {
-        suitesCache.clear();
+        suiteRowsCache.clear();
         childrenIndexCache.clear();
         clearVersionCache();
         dao.clearDbaViewCache();

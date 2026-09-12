@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { Connection } from 'oracledb';
 import * as dao from '../../src/db/utplsqlDao';
+import { createSingleFlightCache } from '../../src/testing/singleFlight';
 import { getTestConnection, closeTestPool, TEST_OWNER } from './support/db';
 import { installFixture, FIXTURE_OWNER_OBJECT, SUITEPATH_GROUP_PATH, SUITEPATH_FIXTURE_OBJECT } from './support/fixture';
 
@@ -132,5 +133,34 @@ describe('utplsqlDao discovery against a real schema [integration]', function ()
             !deps.some((d) => d.name === FIXTURE_OWNER_OBJECT),
             `expected ${FIXTURE_OWNER_OBJECT} NOT among calc_pkg's dependencies, got ${JSON.stringify(deps)}`
         );
+    });
+
+    it('single-flights concurrent getSuitesInfo calls for the same profile into exactly one DB round trip (issue #17)', async () => {
+        // Exercises the real createSingleFlightCache (src/testing/
+        // singleFlight.ts) wrapped around the real dao.getSuitesInfo against
+        // a live connection, the same composition controller.ts's
+        // fetchSuiteRows uses — a call counter around the wrapped fetch is
+        // this test's "the DB saw one execution" signal, cheaper and more
+        // portable than a v$sql.executions lookup (which also needs a
+        // privilege this suite's user may not have).
+        const cache = createSingleFlightCache<dao.SuiteInfoRow[]>();
+        let calls = 0;
+        const fetchForProfile = () =>
+            cache.get('integration-profile', async () => {
+                calls++;
+                return dao.getSuitesInfo(conn, TEST_OWNER, FIXTURE_OWNER_OBJECT);
+            });
+
+        const [r1, r2, r3] = await Promise.all([fetchForProfile(), fetchForProfile(), fetchForProfile()]);
+
+        assert.equal(calls, 1, 'three concurrent callers for the same profile must share exactly one getSuitesInfo round trip');
+        assert.ok(r1.length > 0);
+        assert.deepEqual(r1, r2);
+        assert.deepEqual(r2, r3);
+
+        // A call issued after the batch resolved must hit the value cache,
+        // not trigger a fourth round trip.
+        await fetchForProfile();
+        assert.equal(calls, 1);
     });
 });
