@@ -24,7 +24,7 @@ function appendOutputCrlf(run: vscode.TestRun, text: string, item?: vscode.TestI
 export async function runReporterExport(ctx: UtplsqlContext, request: vscode.TestRunRequest, token: vscode.CancellationToken): Promise<void> {
     const run = ctx.controller.createTestRun(request);
     try {
-        const grouped = groupRequest(ctx, request);
+        const grouped = await groupRequest(ctx, request);
         if (grouped.size === 0) {
             vscode.window.showErrorMessage('utPLSQL: select one or more tests/suites to export first.');
             return;

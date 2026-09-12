@@ -7,10 +7,14 @@ outcomes (pass/fail/error/disabled) and durations (most instant, 10% a short
 fixed delay, 10% 2-10s), and enough tree depth (`--%suitepath`,
 `--%context`) to exercise the parent-lookup logic the tree builder uses.
 
-It does **not** fix any of the performance issues it finds — see
+It does **not** fix most of the performance issues it finds — see
 [Findings](#findings) below for what generating and running this fixture
-against a live utPLSQL 3.2.3 instance actually turned up. Fixing those is
-deliberately a separate piece of work.
+against a live utPLSQL 3.2.3 instance actually turned up, and [Known
+hotspots](#known-hotspots-not-fixed-here) for what's deliberately left as
+separate follow-up work. The one exception, landed alongside this fixture:
+the Test Explorer tree is now materialized one level at a time instead of
+eagerly turning every row into a `TestItem` on first expand — see
+Findings.
 
 ## The fixture
 
@@ -86,10 +90,11 @@ comfortably, so they measure without being a tight regression gate.
 Two settings, both off by default:
 
 - `utplsql.perf.enabled` — times `getSuitesInfo`, `getPackageObjectTypes`,
-  `buildSchemaTree`, `groupRequest`/`dedupPathList`, and the realtime
-  event-stream throughput (events/s), writing each to the `utPLSQL` output
-  channel (see `src/perf.ts`). Set `utplsql.perf.reportFile` to also append
-  each measurement as a JSON line to a file.
+  `materializeLevel` (one Test Explorer tree level per call — see below),
+  `groupRequest`/`dedupPathList`, and the realtime event-stream throughput
+  (events/s), writing each to the `utPLSQL` output channel (see
+  `src/perf.ts`). Set `utplsql.perf.reportFile` to also append each
+  measurement as a JSON line to a file.
 - `utplsql.trace` — the previously-unconditional per-event log lines
   (`pre-suite`, `pre-test`, `post-test`, one `received event` line per row)
   now sit behind this setting instead of always running, since at ~30,000+
@@ -98,22 +103,29 @@ Two settings, both off by default:
 ## Manual checklist (real Extension Host, real tree view)
 
 None of the automated levels above touch the actual VS Code Test Explorer
-UI — `buildSchemaTree` (`src/testing/controller.ts`) is built directly
+UI — `materializeLevel` (`src/testing/controller.ts`) is built directly
 against `vscode.TestController`/`vscode.TestItem`, so measuring the real
 tree view needs a real Extension Development Host, not headless mocha. This
-project does not yet have an `@vscode/test-electron` harness to automate
-that (a real gap — see [Open follow-ups](#open-follow-ups)); until then,
-check manually:
+project does not yet have a *committed* `@vscode/test-electron` harness to
+automate that (a real gap — see [Open follow-ups](#open-follow-ups)); a
+throwaway one (real VS Code, real extension activation, real DB) was used
+to verify the fixes below, but wasn't kept in the repo. Until an automated
+level exists, check manually:
 
 1. `npm run perf:generate`, then F5 (Extension Development Host) against a
    connection profile pointed at the same schema.
-2. Expand the connection root, then the schema node — note how long the
-   tree takes to populate (1000 top-level items, most sitting under 20
-   `perf.gNN` groups).
+2. Expand the connection root, then the schema node — since the tree is now
+   materialized one level at a time (see Findings below), this only builds
+   the ~1000 top-level items (the 20 `perf.gNN` groups plus ungrouped
+   packages), not their tests; expanding one of those groups/packages
+   builds the next level. Note how long each level takes to populate.
 3. Use the Test Explorer's built-in filter box against a substring like
    `perf.g05` — check the tree stays responsive while filtering.
-4. Run All. Watch the Test Results panel while ~15,000 results stream in;
-   scroll the tree during the run.
+4. Run All *without* expanding anything first. Watch the Test Results panel
+   while ~15,000 results stream in — every one of them should still get a
+   pass/fail/error/skip status even though its TestItem didn't exist until
+   the run itself resolved it (see Findings); scroll the tree during the
+   run.
 5. Open "Developer: Show Running Extensions" and check this extension's
    activation/CPU time before and after.
 
@@ -147,6 +159,21 @@ hotspots below:
   cap is specific to literal `IN`-lists. The original concern that this
   needed chunking for a 1000-package deployment does not hold; see
   `discovery.perf.test.ts`'s comment on that call.
+- **The tree is now materialized one level at a time** (`materializeLevel`
+  replaces the old eager `buildSchemaTree`, which turned every row this
+  fixture generates — ~15,000 — into a `TestItem` the moment the schema was
+  expanded, canResolveChildren=false all the way down). Expanding a
+  container now only builds its direct children. This surfaced a real gap,
+  found and fixed against a live instance as part of landing the lazy
+  materialization itself: running a container that was never individually
+  expanded down to its leaves used to report **zero** results for any of
+  its tests (no matching `TestItem` for the streamed pre-test/post-test
+  events to attach status to) — `groupRequest` now resolves a run's full
+  requested subtree first, and `resolveHandler` reconciles rather than
+  replaces a node's children so a run's results survive the node being
+  resolved again afterward. See the `Materialize the Test Explorer tree one
+  level at a time` and `Fix run results not attaching to tests that were
+  never individually expanded` commits.
 
 ## Known hotspots (not fixed here)
 
@@ -170,10 +197,12 @@ measure, not fixed in this pass:
 3. **Per-event output-channel logging** was unconditional before this
    change (now behind `utplsql.trace`, see above) — several `appendLine`
    calls per event add up across tens of thousands of events.
-4. **`buildSchemaTree`'s sort comparator** (`src/testing/controller.ts`)
-   recomputes `path.split('.').length` on every comparison rather than
-   once per row up front — minor next to the other three, but free to fix
-   alongside them.
+
+~~4. `buildSchemaTree`'s sort comparator recomputed `path.split('.').length`
+on every comparison rather than once per row up front.~~ Moot: the lazy,
+one-level-at-a-time `materializeLevel` that replaced `buildSchemaTree` (see
+Findings above) doesn't sort at all — each level's rows come straight out
+of the children-index built once per owner.
 
 ## Open follow-ups
 

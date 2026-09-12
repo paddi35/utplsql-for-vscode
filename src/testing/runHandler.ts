@@ -48,13 +48,44 @@ function collectAllItems(controller: vscode.TestController): Map<string, vscode.
     return all;
 }
 
+function getRunRoots(ctx: UtplsqlContext, request: vscode.TestRunRequest): readonly vscode.TestItem[] {
+    return request.include ?? [...ctx.controller.items].map(([, item]) => item);
+}
+
+/**
+ * Recursively resolves every still-unresolved container under `item` —
+ * needed before a run because controller.ts's resolveHandler now
+ * materializes the Explorer tree one level at a time (see materializeLevel):
+ * a suite/package the user never individually expanded still has 0
+ * TestItem children, so groupRequest (which only walks item.children as
+ * they already are) would find no paths under it to run, and any test
+ * ut_runner reports for it during streaming would have no matching
+ * TestItem to attach pass/fail status to. Sequential, not parallel, to
+ * avoid opening one DB connection per sibling when resolving a bushy
+ * subtree (resolveVirtualTypes opens its own connection per level for
+ * workspaces with no local source, where every row needs it).
+ */
+async function ensureSubtreeResolved(ctx: UtplsqlContext, item: vscode.TestItem): Promise<void> {
+    if (item.canResolveChildren && item.children.size === 0) {
+        await ctx.controller.resolveHandler?.(item);
+    }
+    const children: vscode.TestItem[] = [];
+    item.children.forEach((child) => children.push(child));
+    for (const child of children) {
+        await ensureSubtreeResolved(ctx, child);
+    }
+}
+
 /** Which leaf/path items were actually requested, grouped by connection profile. */
-function groupRequest(
+async function groupRequest(
     ctx: UtplsqlContext,
     request: vscode.TestRunRequest
-): Map<string, { items: vscode.TestItem[]; paths: OwnedPath[] }> {
+): Promise<Map<string, { items: vscode.TestItem[]; paths: OwnedPath[] }>> {
     const excluded = new Set((request.exclude ?? []).map((i) => i.id));
-    const roots = request.include ?? [...ctx.controller.items].map(([, item]) => item);
+    const roots = getRunRoots(ctx, request);
+    for (const root of roots) {
+        await ensureSubtreeResolved(ctx, root);
+    }
 
     const selected: vscode.TestItem[] = [];
     for (const root of roots) {
@@ -520,7 +551,7 @@ export async function runTests(
         );
     }
     try {
-        const grouped = await measure('groupRequest', () => Promise.resolve(groupRequest(ctx, request)));
+        const grouped = await measure('groupRequest', () => groupRequest(ctx, request));
         for (const [profile, group] of grouped) {
             if (token.isCancellationRequested) {
                 group.items.forEach((i) => run.skipped(i));

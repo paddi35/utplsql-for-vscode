@@ -155,8 +155,23 @@ async function resolveVirtualTypes(
  * controller's own resolveHandler (kind === 'path') calls this again for
  * that row's own id when the user actually expands it. Discovery still
  * fetches every row in one DB round trip (splitting that into many smaller
- * calls measured *slower*, not faster — see docs/performance.md); only the
- * client-side vscode.TestItem construction is deferred.
+ * per-package calls measured *slower*, not faster, against a 1000-package
+ * fixture: a single call took ~27-59s, parallel per-package calls at
+ * concurrency 4/10 took ~55s/80s); only the client-side vscode.TestItem
+ * construction is deferred.
+ *
+ * Reconciles rather than wipes-and-rebuilds: an existing child TestItem
+ * whose id is still present at this level (and whose location didn't
+ * change — uri is read-only on a TestItem, so a moved/newly-resolved
+ * location still needs a fresh object) is updated in place and kept, not
+ * replaced. resolveHandler can be invoked again on an already-resolved
+ * node — runHandler.ts's ensureSubtreeResolved does this deliberately
+ * before every run, and VS Code itself may re-resolve after a reload — and
+ * a blind children.replace([]) there would discard the exact TestItem
+ * objects a just-finished TestRun attached pass/fail status to, desyncing
+ * the sidebar from the Test Results panel even though nothing about the
+ * schema actually changed. Rows that disappeared from this level (e.g. the
+ * package was dropped) are removed.
  */
 async function materializeLevel(
     controller: vscode.TestController,
@@ -177,13 +192,11 @@ async function materializeLevel(
     }
     const virtualTypes = await resolveVirtualTypes(secrets, profile, owner, [...missingNames]);
 
+    const expectedIds = new Set<string>();
     for (const row of rowsAtLevel) {
         const id = pathId(profile, owner, row.path);
+        expectedIds.add(id);
         const location = resolveLocation(sourceIndex, row) ?? resolveVirtualLocation(profile, owner, row, virtualTypes);
-        const item = controller.createTestItem(id, row.itemDescription || row.itemName, location?.uri);
-        if (location) {
-            item.range = location.range;
-        }
         const tags = (row.tags ?? '')
             .split(',')
             .map((t) => t.trim())
@@ -195,14 +208,32 @@ async function materializeLevel(
             // escalateStatus), but nothing distinguished them from an
             // enabled test *before* running — this is the only signal that
             // a "failure" is actually just a disabled test never having run.
-            item.description = disabledDescription;
             tags.push(new vscode.TestTag('disabled'));
         }
+
+        const existing = parentItem.children.get(id);
+        const reusable = existing && existing.uri?.toString() === location?.uri?.toString();
+        const item = reusable ? existing : controller.createTestItem(id, row.itemDescription || row.itemName, location?.uri);
+        item.label = row.itemDescription || row.itemName;
+        if (location) {
+            item.range = location.range;
+        }
+        item.description = disabledDescription;
         item.tags = tags;
         item.canResolveChildren = index.has(row.path);
         meta.set(id, { profile, owner, suitepath: row.path, row });
-        parentItem.children.add(item);
+        if (!reusable) {
+            parentItem.children.add(item);
+        }
     }
+
+    const stale: string[] = [];
+    parentItem.children.forEach((child) => {
+        if (!expectedIds.has(child.id)) {
+            stale.push(child.id);
+        }
+    });
+    stale.forEach((id) => parentItem.children.delete(id));
 }
 
 export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceIndex: SourceIndex): UtplsqlContext {
@@ -238,7 +269,6 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
         }
         const parsed = parseId(item.id);
         if (parsed.kind === 'root') {
-            item.children.replace([]);
             const cfg = getProfile(parsed.profile);
             if (!cfg) {
                 reportResolveError(item, new Error(`Connection profile '${parsed.profile}' no longer exists.`));
@@ -265,11 +295,25 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
                         );
                         return;
                     }
+                    const expectedIds = new Set<string>();
                     for (const owner of [...owners].sort()) {
-                        const schemaItem = controller.createTestItem(schemaId(parsed.profile, owner), owner);
+                        const id = schemaId(parsed.profile, owner);
+                        expectedIds.add(id);
+                        // Reuse an existing schema item rather than replacing it:
+                        // it may already carry a fully-resolved subtree with live
+                        // run state (see materializeLevel's merge for why a blind
+                        // rebuild here would orphan that).
+                        const schemaItem = item.children.get(id) ?? controller.createTestItem(id, owner);
                         schemaItem.canResolveChildren = true;
                         item.children.add(schemaItem);
                     }
+                    const stale: string[] = [];
+                    item.children.forEach((child) => {
+                        if (!expectedIds.has(child.id)) {
+                            stale.push(child.id);
+                        }
+                    });
+                    stale.forEach((id) => item.children.delete(id));
                 } finally {
                     await conn.close();
                 }
@@ -279,7 +323,6 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
             return;
         }
         if (parsed.kind === 'schema' || parsed.kind === 'path') {
-            item.children.replace([]);
             try {
                 const owner = parsed.owner;
                 const rows = await fetchSuiteRows(parsed.profile);

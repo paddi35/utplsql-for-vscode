@@ -72,7 +72,7 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
     detailedCoverage.set(run, detailByUri);
     const { randomOrder, randomOrderSeed } = readRandomOrderConfig();
     try {
-        const grouped = groupRequest(ctx, request);
+        const grouped = await groupRequest(ctx, request);
         for (const [profile, group] of grouped) {
             if (token.isCancellationRequested) {
                 group.items.forEach((i) => run.skipped(i));

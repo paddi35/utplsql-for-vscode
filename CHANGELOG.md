@@ -33,6 +33,20 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
   `to_match`, `to_be_like`, `to_contain`, `to_have_count`, a cursor `to_equal` with the
   include/exclude/unordered modifiers, JSON `to_equal`, `ut.fail`, and a verified
   `ut.set_nls`/`ut.reset_nls` pattern).
+- `utplsql.trace` and `utplsql.perf.enabled`/`utplsql.perf.reportFile` add opt-in, verbose
+  per-event logging and timing instrumentation for discovery/run, off by default (see
+  `docs/performance.md`).
+
+### Changed
+
+- The Test Explorer tree is now materialized one level at a time: expanding a schema, suite, or
+  package builds only its direct children instead of eagerly turning every row the schema's suites
+  return into a `TestItem` up front, which made expanding a schema with many packages noticeably
+  slow. Running a suite/package that was never individually expanded now resolves its subtree first,
+  so every test it contains still gets a visible pass/fail result; re-resolving an already-expanded
+  node (which a run now does, and which the editor itself may do after a reload) updates its
+  existing `TestItem`s in place instead of discarding and rebuilding them, so a just-finished run's
+  results stay attached instead of disappearing from the sidebar the next time that node is opened.
 
 ### Fixed
 
