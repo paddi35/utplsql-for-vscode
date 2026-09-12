@@ -1,6 +1,11 @@
 import * as vscode from 'vscode';
 import { findCandidateFiles, matchesConfiguredLanguage } from './languageIndex';
 import { findEntryAtOffset, parseSource } from './plsqlParser';
+import { PerKeyDebouncer } from './perKeyDebouncer';
+import { SourceLocationIndex } from './sourceLocationIndex';
+
+/** onDidChangeTextDocument fires once per keystroke; this is how long we wait for a burst to settle before re-parsing. */
+const REINDEX_DEBOUNCE_MS = 400;
 
 export interface SourceLocation {
     uri: vscode.Uri;
@@ -13,11 +18,19 @@ export interface SourceLocation {
  * (matched by language id, see languageIndex.ts). The owner is not part of
  * the key — it isn't reliably present in source files and comes from the
  * active connection profile instead.
+ *
+ * The map itself (add/remove/lookup, including the body-over-spec
+ * preference) lives in SourceLocationIndex, and per-URI debouncing lives in
+ * PerKeyDebouncer — both vscode-free so they are unit-testable outside the
+ * extension host (see their own doc comments). This class is the
+ * vscode-facing glue on top: turning TextDocument events into calls on
+ * those two, and turning lookup() results back into
+ * real vscode.Range/vscode.Position instances.
  */
 export class SourceIndex implements vscode.Disposable {
-    private readonly index = new Map<string, SourceLocation[]>();
+    private readonly locationIndex = new SourceLocationIndex<vscode.Uri>();
+    private readonly reindexDebouncer = new PerKeyDebouncer(REINDEX_DEBOUNCE_MS);
     private readonly disposables: vscode.Disposable[] = [];
-    private refreshTimer: NodeJS.Timeout | undefined;
 
     constructor() {
         this.disposables.push(
@@ -43,44 +56,18 @@ export class SourceIndex implements vscode.Disposable {
 
     dispose(): void {
         this.disposables.forEach((d) => d.dispose());
-        if (this.refreshTimer) {
-            clearTimeout(this.refreshTimer);
-        }
+        this.reindexDebouncer.dispose();
     }
 
     private scheduleReindex(doc: vscode.TextDocument): void {
         if (!matchesConfiguredLanguage(doc)) {
             return;
         }
-        if (this.refreshTimer) {
-            clearTimeout(this.refreshTimer);
-        }
-        this.refreshTimer = setTimeout(() => this.indexDocument(doc), 400);
-    }
-
-    private removeUri(uri: vscode.Uri): void {
-        const key = uri.toString();
-        for (const [name, locations] of this.index) {
-            const filtered = locations.filter((l) => l.uri.toString() !== key);
-            if (filtered.length > 0) {
-                this.index.set(name, filtered);
-            } else {
-                this.index.delete(name);
-            }
-        }
+        this.reindexDebouncer.schedule(doc.uri.toString(), () => this.indexDocument(doc));
     }
 
     private addEntries(uri: vscode.Uri, text: string): void {
-        this.removeUri(uri);
-        for (const entry of parseSource(text)) {
-            const range = new vscode.Range(
-                new vscode.Position(entry.start.line, entry.start.character),
-                new vscode.Position(entry.end.line, entry.end.character)
-            );
-            const locations = this.index.get(entry.key) ?? [];
-            locations.push({ uri, range, isBody: entry.isBody });
-            this.index.set(entry.key, locations);
-        }
+        this.locationIndex.setOwnerEntries(uri.toString(), uri, parseSource(text));
     }
 
     indexDocument(doc: vscode.TextDocument): void {
@@ -90,28 +77,37 @@ export class SourceIndex implements vscode.Disposable {
         this.addEntries(doc.uri, doc.getText());
     }
 
+    /** Reads uri fresh from disk and re-indexes it. Used for the initial scan. */
     async indexFile(uri: vscode.Uri): Promise<void> {
         try {
             const bytes = await vscode.workspace.fs.readFile(uri);
             this.addEntries(uri, Buffer.from(bytes).toString('utf8'));
         } catch {
-            // file may have been deleted between findFiles and readFile
+            // The file may have been deleted between findCandidateFiles's
+            // scan and this readFile actually running — nothing to index.
         }
     }
 
     async buildFullIndex(): Promise<void> {
-        this.index.clear();
+        this.locationIndex.clear();
         const files = await findCandidateFiles();
         await Promise.all(files.map((uri) => this.indexFile(uri)));
     }
 
     /** Prefer a package body over a spec, since that's where TestMessages should point. */
     lookup(key: string): SourceLocation | undefined {
-        const locations = this.index.get(key.toUpperCase());
-        if (!locations || locations.length === 0) {
+        const found = this.locationIndex.lookup(key);
+        if (!found) {
             return undefined;
         }
-        return locations.find((l) => l.isBody) ?? locations[0];
+        return {
+            uri: found.owner,
+            isBody: found.isBody,
+            range: new vscode.Range(
+                new vscode.Position(found.start.line, found.start.character),
+                new vscode.Position(found.end.line, found.end.character)
+            )
+        };
     }
 
     lookupPackage(pkg: string): SourceLocation | undefined {
