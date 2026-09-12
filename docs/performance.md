@@ -105,12 +105,12 @@ Two settings, both off by default:
 None of the automated levels above touch the actual VS Code Test Explorer
 UI — `materializeLevel` (`src/testing/controller.ts`) is built directly
 against `vscode.TestController`/`vscode.TestItem`, so measuring the real
-tree view needs a real Extension Development Host, not headless mocha. This
-project does not yet have a *committed* `@vscode/test-electron` harness to
-automate that (a real gap — see [Open follow-ups](#open-follow-ups)); a
-throwaway one (real VS Code, real extension activation, real DB) was used
-to verify the fixes below, but wasn't kept in the repo. Until an automated
-level exists, check manually:
+tree view needs a real Extension Development Host, not headless mocha.
+`test/e2e/testExplorer.e2e.test.ts` now covers the one scenario that
+actually needed this level (see Findings and [Open
+follow-ups](#open-follow-ups) for what it doesn't cover yet — filtering,
+cancellation, coverage runs). For anything beyond that, or to eyeball the
+tree instead of asserting on it, check manually:
 
 1. `npm run perf:generate`, then F5 (Extension Development Host) against a
    connection profile pointed at the same schema.
