@@ -18,6 +18,27 @@ jobs:
 
       - run: npm ci
 
+      # Split in two on purpose (issue #14). oracledb and fast-xml-parser
+      # are the only two entries in package.json's "dependencies" -- esbuild
+      # inlines both into dist/extension.js, and .vscodeignore excludes
+      # node_modules/** from the packaged .vsix, so a runtime advisory here
+      # is not "just a dev dependency", it is something that ships to every
+      # installed copy of the extension. --omit=dev scopes the audit to
+      # that shipped surface, and --audit-level=high keeps the gate tripping
+      # only for advisories serious enough to justify failing every PR.
+      - name: Audit runtime dependencies (gates the build)
+        run: npm audit --omit=dev --audit-level=high
+
+      # Everything else -- devDependencies like @vscode/vsce, esbuild,
+      # mocha -- never reaches a user's machine, so an advisory here (e.g.
+      # the qs one currently reachable via @vscode/vsce > typed-rest-client
+      # > qs) is dev/publish-tooling risk, not shipped risk. Still worth
+      # seeing, so this runs across the full tree and prints its findings,
+      # but `|| true` stops it from failing the job over something that
+      # doesn't gate.
+      - name: Audit full dependency tree (informational)
+        run: npm audit --audit-level=moderate || true
+
       - name: Typecheck + unit tests
         run: npm test
 

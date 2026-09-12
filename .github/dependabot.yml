@@ -1,0 +1,42 @@
+# Dependency update automation (issue #14). Two ecosystems:
+#
+#   - npm: package.json carries two runtime dependencies that ship inside
+#     the packaged .vsix -- oracledb and fast-xml-parser -- because esbuild
+#     inlines both into dist/extension.js (.vscodeignore excludes
+#     node_modules/** from the package, so the "it's just node_modules"
+#     reasoning does not apply to them). It also covers the devDependencies
+#     used to build/test/package the extension, including @vscode/vsce,
+#     the publish tool. ci.yml's audit step is the actual security gate;
+#     this is what turns "an advisory exists" into "a PR fixing it already
+#     exists".
+#   - github-actions: the workflows under .github/workflows pin
+#     actions/checkout, actions/setup-node and actions/upload-artifact to
+#     specific major versions. Without this ecosystem those pins only ever
+#     get bumped by hand, which is exactly the kind of drift this is meant
+#     to catch.
+#
+# Both run weekly with patch/minor updates grouped into one PR each, so
+# routine bumps don't turn into a wall of individual PRs to review. Major
+# version bumps are left out of the group and still open individually,
+# since those are the updates most likely to need actual review.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
