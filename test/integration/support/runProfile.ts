@@ -21,6 +21,8 @@ export interface RunResult {
      * different, freshly generated reporter id.
      */
     produced: ProduceSql;
+    /** Raw ut_coverage_html_reporter output, drained when options.coverage.htmlReport is set. */
+    htmlReport?: string;
 }
 
 /**
@@ -74,11 +76,15 @@ export async function runPathsAndCollect(
 
     let coverageXml: string | undefined;
     let additionalCoverageXml: string | undefined;
+    let htmlReport: string | undefined;
     if (options.coverage) {
         coverageXml = await consumeNamedReporter(producerConn, options.coverage.reporter, produced.coverageId!);
         if (options.coverage.additionalReporter) {
             additionalCoverageXml = await consumeNamedReporter(producerConn, options.coverage.additionalReporter, produced.additionalCoverageId!);
         }
+        if (options.coverage.htmlReport) {
+            htmlReport = await consumeNamedReporter(producerConn, 'ut_coverage_html_reporter', produced.htmlId!);
+        }
     }
-    return { events, coverageXml, additionalCoverageXml, produced };
+    return { events, coverageXml, additionalCoverageXml, htmlReport, produced };
 }

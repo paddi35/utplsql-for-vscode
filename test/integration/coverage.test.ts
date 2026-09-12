@@ -4,7 +4,7 @@ import { XMLParser } from 'fast-xml-parser';
 import { CoverageOptions } from '../../src/db/realtimeDao';
 import { getPackageObjectTypes, includes } from '../../src/db/utplsqlDao';
 import { getTestPool, closeTestPool, TEST_OWNER } from './support/db';
-import { installFixture } from './support/fixture';
+import { installFixture, installXssFixture, XSS_PAYLOAD, XSS_TEST_PATH } from './support/fixture';
 import { runPathsAndCollect } from './support/runProfile';
 
 /**
@@ -34,6 +34,7 @@ describe('coverage reporting against a real schema [integration]', function () {
         producerConn = await pool.getConnection();
         consumerConn = await pool.getConnection();
         await installFixture(producerConn);
+        await installXssFixture(producerConn);
     });
 
     after(async () => {
@@ -99,5 +100,48 @@ describe('coverage reporting against a real schema [integration]', function () {
         assert.ok(lines.length >= 2, `expected at least the two return statements to be listed, got ${JSON.stringify(lines)}`);
         assert.ok(lines.some((l: { covered: boolean }) => l.covered === true), 'expected at least one covered line (add_numbers was called)');
         assert.ok(lines.some((l: { covered: boolean }) => l.covered === false), 'expected at least one uncovered line (divide was never called)');
+    });
+
+    /**
+     * Issue #13: src/testing/coverage.ts's webview-hardening only matters if
+     * ut_coverage_html_reporter's output really can carry a live
+     * "</script><script>...</script>" payload through to whatever renders
+     * it — this proves that half of the premise directly against a real
+     * utPLSQL instance, independent of anything this extension does with
+     * the result. installXssFixture() (test/integration/support/
+     * xssFixture.sql) installs a package whose *name* is an Oracle quoted
+     * identifier containing the payload, and whose body also carries it as
+     * a plain source comment; test_xss_pkg.test_calls_payload_pkg calls
+     * that package so it is actually exercised (and therefore reported)
+     * under coverage, scoped by schema (a_coverage_schemes) rather than by
+     * naming the payload package in a_include_objects/a_source_file_mappings
+     * — this suite's own dao.validateIdentifier-guarded SQL builder
+     * (src/db/realtimeDao.ts) rightly refuses a bind value that isn't a
+     * plain identifier, and routing the payload through it would be testing
+     * this extension's own SQL construction, not utPLSQL's reporter output.
+     *
+     * No assertion here about escaping either way — the point is only that
+     * the payload survives byte-for-byte, which is what makes
+     * test/unit/coverageHtml.test.ts's containment assertions meaningful
+     * (rather than defending against a threat that was never real) and is
+     * exactly what a real DB-side reporter needs to do for the extension's
+     * rendering choice to matter at all.
+     */
+    it('lets ut_coverage_html_reporter output carry an unescaped <script> payload straight through', async () => {
+        const coverage: CoverageOptions = {
+            reporter: 'ut_coverage_sonar_reporter',
+            schemes: [TEST_OWNER],
+            fileMappings: [],
+            htmlReport: true
+        };
+
+        const { htmlReport } = await runPathsAndCollect(producerConn, consumerConn, [`${TEST_OWNER}:${XSS_TEST_PATH}`], { coverage });
+        assert.ok(htmlReport, 'expected the html coverage reporter to produce output');
+
+        const occurrences = htmlReport!.split(XSS_PAYLOAD).length - 1;
+        assert.ok(
+            occurrences >= 2,
+            `expected the payload to appear verbatim at least twice (package name + source comment), got ${occurrences} occurrence(s) in: ${htmlReport}`
+        );
     });
 });
