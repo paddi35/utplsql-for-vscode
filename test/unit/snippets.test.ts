@@ -9,7 +9,7 @@ interface Snippet {
 }
 
 // process.cwd()-relative, not __dirname-relative: this file is matched
-// directly by mocha's test glob, and under ts-node/register + mocha's ESM
+// directly by mocha's test glob, and under tsx + mocha's ESM
 // interop it can be loaded via dynamic import() (see the "reparsing as ES
 // module" warning mocha prints), where __dirname is not defined at all.
 // npm's test:unit script always runs mocha from the project root.

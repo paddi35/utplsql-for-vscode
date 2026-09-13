@@ -17,7 +17,7 @@ type PoolModule = typeof import('../../src/db/pool');
  * the same mocha process turned out to be unreliable — some later
  * require("oracledb") calls silently resolved to the real, already-cached
  * module instead of the just-installed fake, for reasons that didn't
- * reduce to a specific Node/ts-node caching layer worth fighting further.
+ * reduce to a specific Node/tsx caching layer worth fighting further.
  * pool.ts imports connections.ts (for getPassword) and tnsnames.ts (for
  * resolveTnsAdminDir), both of which import 'vscode' for real — see
  * connections.test.ts's loadConnections for why loading it has to be a

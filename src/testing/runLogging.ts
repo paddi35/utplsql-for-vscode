@@ -3,7 +3,7 @@
  * output (src/testing/runHandler.ts), split out into their own vscode-free
  * functions so they can be unit tested outside the extension host -- that
  * file imports 'vscode' at the top and therefore cannot be `require()`d by
- * plain mocha/ts-node at all (see virtualSourcePath.ts and
+ * plain mocha/tsx at all (see virtualSourcePath.ts and
  * reporterDao.ts's buildRunWithReporterSql for the same split elsewhere in
  * this codebase, and test/unit/runLogging.test.ts for the tests this
  * enables).

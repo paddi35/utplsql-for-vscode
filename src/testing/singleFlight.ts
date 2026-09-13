@@ -2,7 +2,7 @@
  * Generic resolved-value cache with in-flight de-duplication, keyed by an
  * arbitrary string. Kept vscode-free (see workspace/virtualSourcePath.ts for
  * the same split elsewhere in this codebase) so it is directly testable with
- * plain mocha/ts-node instead of the extension host.
+ * plain mocha/tsx instead of the extension host.
  *
  * Fixes the shape of issue #17: controller.ts's fetchSuiteRows used to cache
  * only the *resolved* value, which is a cache-effective-only-after-the-fact

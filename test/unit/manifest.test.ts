@@ -8,7 +8,7 @@ import * as path from 'node:path';
  * (see test/unit/snippets.test.ts for the precedent of asserting against a
  * shipped non-code asset the same way). process.cwd()-relative, not
  * __dirname-relative, for the same reason snippets.test.ts's SNIPPETS_PATH
- * is: under ts-node/register + mocha's ESM interop this file can be loaded
+ * is: under tsx + mocha's ESM interop this file can be loaded
  * via dynamic import(), where __dirname is not defined; npm's test:unit
  * script always runs mocha from the project root.
  */

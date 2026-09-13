@@ -314,16 +314,16 @@
     "package": "vsce package",
     "publish": "vsce publish",
     "typecheck": "tsc --noEmit",
-    "test:unit": "mocha --require ts-node/register --extensions ts \"test/unit/**/*.test.ts\"",
-    "pretest:unit": "echo using ts-node",
-    "test:integration": "mocha --require ts-node/register --extensions ts --timeout 30000 \"test/integration/**/*.test.ts\"",
+    "test:unit": "mocha --require tsx/cjs --extensions ts \"test/unit/**/*.test.ts\"",
+    "pretest:unit": "echo using tsx",
+    "test:integration": "mocha --require tsx/cjs --extensions ts --timeout 30000 \"test/integration/**/*.test.ts\"",
     "test": "npm run typecheck && npm run test:unit",
-    "test:perf": "mocha --require ts-node/register --extensions ts --timeout 1200000 \"test/perf/**/*.perf.test.ts\"",
-    "perf:generate": "ts-node test/perf/support/cli.ts generate",
-    "perf:scale": "ts-node test/perf/support/cli.ts scale",
-    "perf:drop": "ts-node test/perf/support/cli.ts drop",
+    "test:perf": "mocha --require tsx/cjs --extensions ts --timeout 1200000 \"test/perf/**/*.perf.test.ts\"",
+    "perf:generate": "tsx test/perf/support/cli.ts generate",
+    "perf:scale": "tsx test/perf/support/cli.ts scale",
+    "perf:drop": "tsx test/perf/support/cli.ts drop",
     "pretest:e2e": "esbuild test/e2e/testExplorer.e2e.test.ts --bundle --platform=node --external:vscode --outfile=test/e2e/out/testExplorer.e2e.test.js --format=cjs && node test/e2e/support/copyFixtures.js",
-    "test:e2e": "ts-node test/e2e/runTests.ts"
+    "test:e2e": "tsx test/e2e/runTests.ts"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.7",
@@ -334,7 +334,7 @@
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.28.2",
     "mocha": "^12.0.0",
-    "ts-node": "^10.9.2",
+    "tsx": "^4.23.13",
     "typescript": "^5.5.4"
   },
   "dependencies": {

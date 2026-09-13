@@ -3,7 +3,7 @@ import * as path from 'node:path';
 /**
  * Pure path-containment logic for utplsql.perf.reportFile (see perf.ts),
  * kept vscode-free so it can be unit tested directly with plain mocha/
- * ts-node instead of the extension host -- importing 'vscode' itself fails
+ * tsx instead of the extension host -- importing 'vscode' itself fails
  * outside it (see workspace/virtualSourcePath.ts for the same pattern).
  *
  * utplsql.perf.reportFile/perf.enabled are now "scope": "machine"

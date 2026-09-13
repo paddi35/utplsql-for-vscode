@@ -4,7 +4,7 @@
 // bundle's own location (test/e2e/out/), not fixture.ts's original
 // directory. Copying the .sql files it reads there is simpler and less
 // fragile than changing fixture.ts's file-reading approach just for this
-// one (bundled) consumer, when test/integration's own (unbundled, ts-node)
+// one (bundled) consumer, when test/integration's own (unbundled, tsx)
 // use of the same file needs it to keep reading relative to itself.
 const fs = require('node:fs');
 const path = require('node:path');
