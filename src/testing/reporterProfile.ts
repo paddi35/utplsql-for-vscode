@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { Connection } from 'oracledb';
 import { getProfile } from '../db/connections';
-import { getPool } from '../db/pool';
+import { getPool, recyclePool } from '../db/pool';
 import * as dao from '../db/utplsqlDao';
 import { runWithReporter } from '../db/reporterDao';
 import { UtplsqlContext } from './model';
@@ -105,24 +105,44 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
                 continue;
             }
             const runPaths = group.paths.map((p) => `${p.owner}:${p.suitepath}`);
+            let cancelled = false;
             try {
-                const output = await runWithReporter(producerConn, consumerConn, reporterName, runPaths, readReporterOptions());
-                if (target === 'Save to File') {
+                const result = await runWithReporter(producerConn, consumerConn, reporterName, runPaths, readReporterOptions(), token);
+                cancelled = result.cancelled;
+                if (cancelled) {
+                    // Whatever text was collected before cancellation is a
+                    // truncated fragment of the reporter's format (e.g. an
+                    // unclosed JUnit XML element) — showing or saving it as
+                    // if it were the finished report would be misleading, so
+                    // it is deliberately dropped here, same as a cancelled
+                    // run never presents partial per-test results as final.
+                    appendOutputCrlf(run, `--- ${profile}: export cancelled ---`);
+                } else if (target === 'Save to File') {
                     const uri = await vscode.window.showSaveDialog({ saveLabel: `Save '${profile}' report` });
                     if (uri) {
-                        await vscode.workspace.fs.writeFile(uri, Buffer.from(output, 'utf8'));
+                        await vscode.workspace.fs.writeFile(uri, Buffer.from(result.output, 'utf8'));
                     }
                 } else {
                     appendOutputCrlf(run, `--- ${profile} (${reporterName}) ---`);
-                    appendOutputCrlf(run, output);
-                    ctx.output.appendLine(output);
+                    appendOutputCrlf(run, result.output);
+                    ctx.output.appendLine(result.output);
                 }
                 group.items.forEach((i) => run.skipped(i));
             } catch (err) {
                 group.items.forEach((i) => run.errored(i, new vscode.TestMessage(String(err))));
             } finally {
-                await producerConn.close();
-                await consumerConn.close();
+                await producerConn.close().catch(() => undefined);
+                // Tolerant: when cancelled, runWithReporter's cancelConsumer()
+                // already broke and drop-closed this same connection, and a
+                // second close() on it throws — expected, not a real failure.
+                await consumerConn.close().catch(() => undefined);
+                // Only after both connections are safely closed — same
+                // ordering as runOneProfile's finally block (runHandler.ts)
+                // and for the same reason: recyclePool()'s pool.close(0)
+                // must not race a still-executing statement on producerConn.
+                if (cancelled) {
+                    await recyclePool(profile);
+                }
             }
         }
     } finally {

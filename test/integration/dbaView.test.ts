@@ -66,7 +66,7 @@ describe('per-profile dba_/all_ view caching against a real schema [integration]
         // before this fix.
         await dao.getDbaView(privilegedConn, 'priv-probed-first');
 
-        await assert.doesNotReject(dao.includes(unprivilegedConn!, TEST_OWNER, 'CALC_PKG', 'unpriv-second'));
+        await assert.doesNotReject(dao.includes(unprivilegedConn!, TEST_OWNER, ['CALC_PKG'], 'unpriv-second'));
         await assert.doesNotReject(dao.getPackageObjectTypes(unprivilegedConn!, TEST_OWNER, [FIXTURE_OWNER_OBJECT], 'unpriv-second'));
         await assert.doesNotReject(dao.getObjectSource(unprivilegedConn!, TEST_OWNER, FIXTURE_OWNER_OBJECT, 'PACKAGE BODY', 'unpriv-second'));
     });
@@ -80,7 +80,7 @@ describe('per-profile dba_/all_ view caching against a real schema [integration]
         // throwing — the "worse of the two" failure mode issue #15
         // describes, so the assertion is on the *value*, not just that the
         // call didn't reject.
-        const deps = await dao.includes(privilegedConn, TEST_OWNER, 'TEST_CALC_PKG', 'priv-second');
+        const deps = await dao.includes(privilegedConn, TEST_OWNER, ['TEST_CALC_PKG'], 'priv-second');
         assert.ok(
             deps.some((d) => d.owner === TEST_OWNER && d.name === 'CALC_PKG'),
             `expected CALC_PKG among TEST_CALC_PKG's dependencies via dba_dependencies, got ${JSON.stringify(deps)}`

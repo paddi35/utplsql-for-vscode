@@ -25,7 +25,8 @@ and reporter export, without needing SQL Developer, PL/SQL Developer or the `utP
 - **Failure locations** — failed expectations jump straight to the failing line inside the
   package **body**, not just the test procedure.
 - **Code coverage** — per-line coverage in the native VS Code Coverage view
-  (`ut_coverage_sonar_reporter`), with an optional rendered HTML report on the side.
+  (`ut_coverage_sonar_reporter`), with an optional `ut_coverage_html_reporter` report you can open
+  in your browser.
 - **Reporter export** — run any output reporter your utPLSQL install offers (documentation,
   JUnit, TAP, TeamCity, Sonar, …) to the Output channel or a file.
 - **Test generation** — scaffold a test package for the package/procedure/function under the
@@ -77,11 +78,11 @@ entries to `files.associations` yourself for any extensions it doesn't already c
 | Setting | Default | Description |
 |---|---|---|
 | `utplsql.connections` | `[]` | Connection profiles (`name`, `user`, `connectString`, optional `defaultSchema`). Managed via the commands above; edit directly only if you know what you're doing. |
-| `utplsql.connections.tnsAdminPath` | `""` | Folder containing `tnsnames.ora`. Falls back to the Oracle SQL Developer extension's `sqldeveloper.connections.tnsConfiguration.path`, then `TNS_ADMIN`. If empty and you enter a TNS alias directly as the connect string, `node-oracledb` still resolves it itself at connect time. |
+| `utplsql.connections.tnsAdminPath` | `""` | Folder containing `tnsnames.ora`. Falls back to the Oracle SQL Developer extension's `sqldeveloper.connections.tnsConfiguration.path` — but only a user/machine-level value for it, never one set by a workspace, since that setting's scope belongs to that extension and is not ours to restrict — then to `TNS_ADMIN`. If empty and you enter a TNS alias directly as the connect string, `node-oracledb` still resolves it itself at connect time. |
 | `utplsql.discovery.languageIds` | `["sql", "oracle-sql"]` | Language IDs treated as PL/SQL source for discovery and parsing. |
 | `utplsql.run.randomOrder` | `false` | Run tests in a random order (`a_random_test_order`) instead of declaration order, to surface hidden order dependencies between tests. |
 | `utplsql.run.randomOrderSeed` | `0` | Seed for `utplsql.run.randomOrder`. `0` leaves the seed unset (a new one every run, not reproducible); a positive value reproduces the same order every run. |
-| `utplsql.coverage.htmlReport` | `false` | Also render an `ut_coverage_html_reporter` report in a webview alongside the native coverage view. |
+| `utplsql.coverage.htmlReport` | `false` | Also run `ut_coverage_html_reporter`, writing the report to a temporary file and offering it via a notification (**Open in Browser** / **Save As…**) instead of rendering it in a webview — its HTML is assembled by the database from unescaped, database-derived text (schema/object names, source lines) that on a shared schema you may not have written yourself. |
 | `utplsql.coverage.excludeObjects` | `[]` | Additional object names (e.g. `UT`, `UT_EXPECTATION`) excluded from the automatically derived coverage scope — e.g. when utPLSQL itself is installed in the same schema as the code under test. |
 | `utplsql.coverage.schemes` / `utplsql.coverage.includeObjects` | `[]` | Fully override the automatically derived `a_coverage_schemes`/`a_include_objects` — useful for objects reached only dynamically (`execute immediate`, triggers), which never show up in `*_dependencies`. Empty = automatic. |
 | `utplsql.coverage.includeSchemaExpr` / `includeObjectExpr` / `excludeSchemaExpr` / `excludeObjectExpr` | `""` | Regex-based coverage scoping (`a_include_schema_expr` etc.), applied on top of the automatic/overridden scope. |
@@ -158,9 +159,19 @@ maintainers — the bugs in this extension are mine.
 
 - Passwords are stored only in VS Code's `SecretStorage`, never in settings and never written to
   the output channel.
-- `utplsql.connections` and `utplsql.connections.tnsAdminPath` are **machine-scoped**: a
-  workspace cannot contribute or override them, so opening someone else's repository can't
-  redirect a connection profile (and its stored password) at another host.
+- `utplsql.connections`, `utplsql.connections.tnsAdminPath`, `utplsql.perf.enabled` and
+  `utplsql.perf.reportFile` are all **machine-scoped**: a workspace cannot contribute or override
+  any of them, so opening someone else's repository can't redirect a connection profile (and its
+  stored password) at another host, or turn on performance logging to a workspace-chosen file.
+- `utplsql.connections.tnsAdminPath`'s fallback to the Oracle SQL Developer extension's
+  `sqldeveloper.connections.tnsConfiguration.path` only honours a value set at user/global level,
+  never one from a workspace, since that setting's scope belongs to that extension and is not
+  ours to restrict. Without that check, a workspace could still redefine the TNS alias a
+  stored-password connection profile names and redirect that connection to another host, despite
+  our own settings being machine-scoped.
+- `utplsql.perf.reportFile` is additionally validated at write time: even a value configured at
+  user/machine level is only used if it resolves inside an open workspace folder, so a mistyped or
+  unexpected path can't append to an unrelated file elsewhere on disk.
 - The extension is disabled in [untrusted workspaces](https://code.visualstudio.com/docs/editor/workspace-trust).
 
 Found a security issue? Please report it via

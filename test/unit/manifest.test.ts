@@ -79,6 +79,50 @@ describe('marketplace/README claims vs. registered run profiles', () => {
     });
 });
 
+/**
+ * Issue #13 removed the coverage HTML report's extension-host webview
+ * (c111cf6) and left package.json's and README's `utplsql.coverage.htmlReport`
+ * descriptions -- plus a CHANGELOG entry -- still promising one; nothing in
+ * this file caught it before a human happened to notice. Two content-drift
+ * guards for that were considered here and deliberately not added, having
+ * been checked against this repository's actual history rather than reasoned
+ * about in the abstract -- both fail:
+ *
+ * 1. Fail if a description mentions "webview" while no file under `src`
+ *    constructs `createWebviewPanel`. Sound in principle -- run against
+ *    c111cf6 (webview already gone from src, descriptions not yet updated),
+ *    it would have fired: both descriptions still said "in a webview"/"in
+ *    einem Webview anzeigen", unnegated. But 7fa9894's actual fix necessarily
+ *    still contains the word "webview", now to explain that the report is no
+ *    longer one ("nicht mehr in einem Webview angezeigt", "instead of
+ *    rendering it in a webview"). Added now, this guard fails immediately
+ *    against that correct, already-merged text. Making it pass would mean
+ *    detecting negation in prose -- "no longer a webview" vs. "shown in a
+ *    webview" -- which is exactly the sentence-level heuristic that misfires
+ *    on the next rewording and gets deleted, not a cheap grep-shaped
+ *    invariant like this file's other checks.
+ * 2. Assert package.json's and README's htmlReport descriptions agree on
+ *    mechanism keywords ("webview"/"browser"/"notification"), the way the
+ *    debug-mention check above compares two description fields. This is
+ *    structurally unable to catch what actually happened: package.json and
+ *    README were edited together both times (the original stale wording, and
+ *    the fix) and always agreed with each other -- the drift was between the
+ *    (agreeing) docs and the changed source, not between the two docs. It
+ *    also would not survive this manifest's own bilingual split: most
+ *    package.json configuration descriptions are German while README is
+ *    English-only (compare e.g. utplsql.connections's description to
+ *    utplsql.run.randomOrder's), and "webview"/"browser" only line up here as
+ *    loanwords -- "notification" does not ("eine Benachrichtigung"), so even
+ *    a hand-picked keyword subset would be reverse-engineered from today's
+ *    exact wording rather than a real invariant.
+ *
+ * Nothing found here both catches this drift class and survives an accurate
+ * future rewording. Left as a known gap rather than a guard that would need
+ * constant re-tuning -- see this file's other describe blocks above for the
+ * parts of manifest drift that *are* cheaply and reliably checkable (names
+ * and boolean claims, not prose describing a mechanism).
+ */
+
 function extractRegisteredCommandIds(source: string): string[] {
     const ids: string[] = [];
     const re = /registerCommand\(\s*'([^']+)'/g;

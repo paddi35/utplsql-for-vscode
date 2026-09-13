@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { Connection } from 'oracledb';
 import { escalateStatus } from '../../src/model/tree';
+import { buildProduceSql, newReporterId } from '../../src/db/realtimeDao';
+import { formatProduceSqlLine, formatRunFailureLines, formatRunPathsLine, summarizeRun } from '../../src/testing/runLogging';
 import { getTestPool, closeTestPool, TEST_OWNER } from './support/db';
 import { installFixture } from './support/fixture';
 import { runPathsAndCollect } from './support/runProfile';
@@ -74,5 +76,95 @@ describe('running the fixture suite end-to-end [integration]', function () {
         const postTests = events.map((e) => e.event).filter((e) => e.type === 'post-test');
         assert.equal(postTests.length, 1);
         assert.equal((postTests[0] as { id: string }).id, 'test_calc_pkg.test_add');
+    });
+
+    /**
+     * Issue #23: runOneProfile()'s pre-run output-channel logging must stay
+     * bounded on the untraced (default) path and only grow with the full
+     * a_paths/produce-SQL detail behind utplsql.trace. runHandler.ts itself
+     * can't be exercised here (it imports 'vscode', see support/db.ts's own
+     * comment on the same constraint), so this reproduces exactly what
+     * runOneProfile writes to ctx.output — summarizeRun() unconditionally,
+     * formatRunPathsLine()/formatProduceSqlLine() only under trace() — using
+     * the real formatters against a real produce SQL from a real run of the
+     * fixture, rather than asserting on the formatters in isolation the way
+     * test/unit/runLogging.test.ts does.
+     */
+    it('keeps the untraced pre-run output to a single bounded summary line', async () => {
+        const runPaths = [`${TEST_OWNER}:test_calc_pkg`];
+        const selectedItems = [{ id: `conn:it/path:${TEST_OWNER}:test_calc_pkg` }];
+
+        const { events } = await runPathsAndCollect(producerConn, consumerConn, runPaths);
+        assert.ok(events.some((e) => e.event.type === 'post-run'), 'sanity check: the run this test double-checks the logging shape for must actually complete');
+
+        const traceEnabled = false;
+        const output: string[] = [summarizeRun('it', runPaths, selectedItems)];
+        if (traceEnabled) {
+            output.push(formatRunPathsLine('it', runPaths, selectedItems));
+        }
+
+        assert.deepEqual(output, ["utPLSQL: running 1 path(s) for 'it' (1 selected item(s))"]);
+        assert.ok(!output.some((l) => l.includes('run paths for')));
+        assert.ok(!output.some((l) => l.includes('produce SQL:')));
+    });
+
+    it('adds the detailed run-paths line and the produce SQL, byte-identical to the SQL actually executed, when tracing is on', async () => {
+        const runPaths = [`${TEST_OWNER}:test_calc_pkg`];
+        const selectedItems = [{ id: `conn:it/path:${TEST_OWNER}:test_calc_pkg` }];
+
+        // `produced` here is the exact ProduceSql this call sent to
+        // producerConn (see support/runProfile.ts) — comparing against it,
+        // not against a second, separately built buildProduceSql() call,
+        // is what makes the byte-identical assertion below meaningful: a
+        // second call would embed a different, freshly generated reporter
+        // id and therefore never match byte-for-byte regardless of whether
+        // formatProduceSqlLine is correct.
+        const { events, produced } = await runPathsAndCollect(producerConn, consumerConn, runPaths);
+        assert.ok(events.some((e) => e.event.type === 'post-run'));
+
+        const traceEnabled = true;
+        const output: string[] = [summarizeRun('it', runPaths, selectedItems)];
+        if (traceEnabled) {
+            output.push(formatRunPathsLine('it', runPaths, selectedItems), formatProduceSqlLine(produced.sql));
+        }
+
+        assert.equal(output.length, 3);
+        assert.ok(output[1].includes(selectedItems[0].id), 'expected the detailed run-paths line to include the selected item id');
+        assert.equal(output[2], `utPLSQL: produce SQL:\n${produced.sql}`, "the logged SQL must be byte-identical to buildProduceSql's actual output for this run");
+    });
+
+    it('logs the produce SQL in the failure path even with tracing off, for a deliberately invalid path', async () => {
+        // Same failure utplsql.runWithTags hits when a_tags excludes
+        // everything in scope (runOptions.test.ts's "raises ORA-20204, same
+        // as an unmatched suite path") — confirmed there against a live
+        // utPLSQL 3.2.3 instance to be a producer-side exception, not a
+        // silent empty run, and fast enough to observe well within this
+        // suite's 30s timeout.
+        const invalidPath = `${TEST_OWNER}:this_suite_does_not_exist`;
+        const id = newReporterId();
+        // Pinning `id` (support/runProfile.ts's runPathsAndCollect accepts
+        // it as an override) means this locally rebuilt `produced` is
+        // byte-identical to what the call below actually sent — needed here
+        // because, unlike the two cases above, a rejected call never gets a
+        // chance to return its own `produced` from inside RunResult.
+        const produced = buildProduceSql(id, [invalidPath], {});
+
+        let caught: unknown;
+        try {
+            await runPathsAndCollect(producerConn, consumerConn, [invalidPath], {}, id);
+        } catch (err) {
+            caught = err;
+        }
+        assert.ok(caught, 'expected the invalid path to make the producer fail');
+        assert.match(String(caught), /ORA-20204/);
+
+        // runOneProfile's catch block's exact situation: `produced` was
+        // already built before the failure, so formatRunFailureLines
+        // includes its SQL unconditionally — regardless of utplsql.trace,
+        // which is off here (the default) and would otherwise have
+        // suppressed it entirely, same as the untraced case above.
+        const lines = formatRunFailureLines('it', caught, produced.sql);
+        assert.equal(lines.length, 2);
+        assert.equal(lines[1], `utPLSQL: produce SQL:\n${produced.sql}`);
     });
 });

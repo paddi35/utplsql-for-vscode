@@ -265,18 +265,43 @@ export async function getSuitesInfo(
     });
 }
 
-/** Objects reachable via {dba|all}_dependencies from the run's covered objects, for coverage scoping. `profile` selects the dba_/all_ probe cache entry (see getDbaView) — it does not otherwise affect the query. */
-export async function includes(conn: Connection, owner: string, name: string, profile: string): Promise<Array<{ owner: string; name: string }>> {
+/**
+ * Objects reachable via {dba|all}_dependencies from `names` under `owner`,
+ * for coverage scoping — one query per *owner*, not per object: `names` is
+ * batched into a `name IN (:n0, :n1, ...)` list with one bind variable per
+ * name, the same shape getPackageObjectTypes below already uses for its
+ * `object_name IN (...)` list (see that function's doc comment — verified
+ * against a live Oracle 23ai instance up to 5000 bind variables in one call,
+ * well past ORA-01795's 1000-*literal*-expression limit, which a bind list
+ * is not subject to). `profile` selects the dba_/all_ probe cache entry (see
+ * getDbaView) — it does not otherwise affect the query.
+ *
+ * Issue #21: buildCoverageOptions (coverage.ts) used to call this once per
+ * selected TestItem, with the same (owner, name) pair repeated for every
+ * test/context/suite row belonging to the same package — coverageScope.ts's
+ * computeCoverageScope is what now collapses that down to one call per
+ * owner, with that owner's full distinct name list, before this ever runs.
+ */
+export async function includes(conn: Connection, owner: string, names: string[], profile: string): Promise<Array<{ owner: string; name: string }>> {
+    if (names.length === 0) {
+        return [];
+    }
     const view = await getDbaView(conn, profile);
     const exclusionCsv = EXCLUDED_SCHEMA_PATTERNS.map((s) => `'${s}'`).join(', ');
+    const binds: Record<string, string> = { owner };
+    const bindNames = names.map((n, i) => {
+        const key = `n${i}`;
+        binds[key] = n.toUpperCase();
+        return `:${key}`;
+    });
     const result = await conn.execute<Record<string, unknown>>(
         `SELECT DISTINCT referenced_owner AS owner, referenced_name AS name
            FROM ${view}dependencies
           WHERE owner = upper(:owner)
-            AND name = upper(:name)
+            AND name IN (${bindNames.join(', ')})
             AND referenced_owner NOT IN (${exclusionCsv})
             AND referenced_owner NOT LIKE 'APEX\\_______' ESCAPE '\\'`,
-        { owner, name }
+        binds
     );
     return (result.rows ?? []).map((r) => ({ owner: String(r.OWNER), name: String(r.NAME) }));
 }

@@ -36,6 +36,13 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
 - `utplsql.trace` and `utplsql.perf.enabled`/`utplsql.perf.reportFile` add opt-in, verbose
   per-event logging and timing instrumentation for discovery/run, off by default (see
   `docs/performance.md`).
+- **Export with Reporter** (the run profile) and `utplsql.runWithReporter` (the cursor command) can
+  now be cancelled while the export itself is running, not just between connection profiles or not
+  at all; `utplsql.runWithReporter` also gets its own cancellable progress notification, reporting
+  coarse phases (opening consumer / running tests / collecting `<n>` lines). Previously a wedged
+  export could hold two pool connections for up to an hour with no stop button that did anything;
+  cancelling now closes both connections and recycles the pool so a following export on the same
+  profile still succeeds.
 
 ### Changed
 
@@ -62,6 +69,49 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
   `Run with Coverage` and `Export with Reporter` — and the "Known limitations" section a few
   paragraphs down already said as much. Both now read "Run utPLSQL unit tests…"; debugging stays
   out of scope until VS Code has a PL/SQL debug adapter for this extension to drive.
+- `SourceIndex` re-indexed documents through a single shared debounce timer: editing one file and
+  then a different file within the 400 ms debounce window cancelled the first file's pending
+  re-index via `clearTimeout`, so only the most recently edited document was ever re-parsed. The
+  index silently went stale for every file but the last one touched — gutter icons, "go to test",
+  and a failed expectation's location could all point at the wrong line — until that file was
+  reopened or the window reloaded. Re-indexing is now debounced per document URI, so edits across
+  several files inside the same window are each still re-indexed.
+- Discovery and coverage picked their `dba_`/`all_` data-dictionary view prefix from a single cache
+  shared by every connection profile: whichever profile probed it first decided the answer for every
+  other profile for the rest of the session. A second, less-privileged profile inheriting a cached
+  `dba_` answer failed with `ORA-00942`; a second, more-privileged profile inheriting a cached `all_`
+  answer silently lost part of its coverage scope with no error at all. The cache is now keyed per
+  connection profile and cleared by **Refresh**, so a mid-session grant or revoke no longer needs a
+  window reload to take effect either.
+- Expanding two Test Explorer nodes at once (or starting a run, which re-resolves its subtree first)
+  could send the same connection profile's full suite-discovery query to the database more than once
+  in parallel instead of sharing a single result — a query that measures 27-59 seconds against the
+  documented 1000-package fixture, so this read as the Test Explorer hanging for the better part of a
+  minute just from expanding two things quickly. Concurrent resolves for the same profile now share
+  one in-flight query.
+- Resolving a tree level whose rows have no matching local workspace source file — the workspace
+  shape this extension is meant to support, with the database as the sole source of truth and no
+  local `.pkb`/`.pks` files at all — opened a fresh pooled connection and queried object types on
+  every single level, even though every level for the same schema asks the same question. Expanding
+  or running a large such tree (e.g. "Run All" on the documented 1000-package fixture) could rack up
+  well over a thousand sequential connection checkouts against a pool sized for as few as two
+  connections before the first test even started. Object types are now cached and primed once per
+  connection profile and schema instead of once per tree level.
+- The pre-run `run paths for '<profile>' = …` log line (embedding every selected `TestItem` id)
+  and the `produce SQL: …` log line (embedding the entire generated PL/SQL block) were written to
+  the `utPLSQL` output channel unconditionally on every run, instead of being gated behind
+  `utplsql.trace` like the rest of this file's per-event logging already is. On the documented
+  1000-package/~15,000-test fixture, a plain "Run All" wrote on the order of a megabyte in a single
+  call right as the run started, burying every other line already in the output channel. Both are
+  now gated behind `utplsql.trace`; a short, count-bounded summary line is still always logged, and
+  the full produce SQL is still logged unconditionally when a run fails.
+- PL/SQL source files changed outside the editor — a `git checkout`/`pull`, a branch switch, or a
+  file created/deleted by another tool — were never re-indexed; only opening or editing a document
+  in VS Code itself fed the workspace index, so `lookupPackage()`/`lookupProcedure()` kept handing
+  out stale locations (or, for a deleted file, a location that no longer exists) for the rest of
+  the session, with a window reload the only fix. A filesystem watcher now indexes created/changed
+  files and removes deleted ones as they happen; closing an untitled/unsaved document now also
+  drops its entries instead of leaving them behind, and closing a saved one re-reads it from disk.
 
 ### Security
 
@@ -74,6 +124,24 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
   logging the rejection once instead of silently swallowing it in a bare `catch {}`, and appends
   the report line with `fs.appendFile` (async) instead of `appendFileSync` so a slow/contended disk
   can no longer block the extension host.
+- The `TNS_ADMIN` directory fallback no longer trusts a workspace-scoped value of
+  `sqldeveloper.connections.tnsConfiguration.path` — a setting owned by the Oracle SQL Developer
+  for VSCode extension, not this one, and outside this extension's control. It was previously read
+  with a plain `get()`, which does not distinguish a workspace-set value from a global one, and the
+  resulting directory was passed straight to `oracledb.createPool()`'s `configDir` — so a
+  workspace's own `.vscode/settings.json` could redefine the TNS alias a stored-password connection
+  profile names and redirect that connection, credentials included, to a host the workspace chose.
+  The fallback now reads that setting via `inspect()` and only honours its global/default value;
+  `utplsql.connections.tnsAdminPath` (already machine-scoped) still takes priority, and a
+  workspace-scoped SQL Developer value is ignored in favour of `TNS_ADMIN`.
+- The coverage HTML report (`utplsql.coverage.htmlReport`) is no longer rendered in an
+  extension-host webview. `ut_coverage_html_reporter`'s output is assembled by the database from
+  database-derived text (schema/object names, verbatim source lines) that utPLSQL does not escape,
+  so on a shared schema it is not necessarily content the viewer wrote themselves. It is now
+  written to a temporary file with a hardened CSP and offered via a notification (**Open in
+  Browser** / **Save As…**) instead — a browser tab has no `acquireVsCodeApi()` to reach and no
+  extension UI to impersonate. The report no longer opens automatically beside the editor, and now
+  opens in the OS browser instead of inside VS Code.
 
 ## [0.1.0] - 2026-08-31
 

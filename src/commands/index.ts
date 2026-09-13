@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { addProfile, getProfile, readProfiles, removeProfile, setPassword } from '../db/connections';
-import { getPool } from '../db/pool';
+import { getPool, recyclePool } from '../db/pool';
 import * as dao from '../db/utplsqlDao';
 import { runWithReporter as runWithReporterDao } from '../db/reporterDao';
 import { UtplsqlContext } from '../testing/model';
@@ -10,6 +10,7 @@ import { readReporterOptions } from '../testing/reporterConfig';
 import { generateTestPackage, readGenerateOptions } from '../generate/testTemplate';
 import { matchesConfiguredLanguage } from '../workspace/languageIndex';
 import { listTnsAliases, resolveTnsAdminDir } from '../db/tnsnames';
+import { getSuiteRows } from '../testing/controller';
 
 const ENTER_MANUALLY = '$(edit) Enter Easy-Connect string manually…';
 
@@ -119,6 +120,11 @@ interface ResolvedCursorObject {
     procedureName?: string;
 }
 
+/** Mirrors controller.ts's own (unexported) onUnknownItemType handling, so getSuiteRows callers here log an unrecognised item_type the same way instead of silently absorbing it. */
+function logUnknownItemType(ctx: UtplsqlContext, profile: string, raw: unknown): void {
+    ctx.output.appendLine(`utPLSQL: getSuitesInfo for '${profile}' returned an unrecognised item_type '${String(raw)}', treating it as a suite`);
+}
+
 async function resolveAtCursor(ctx: UtplsqlContext): Promise<ResolvedCursorObject | undefined> {
     const editor = vscode.window.activeTextEditor;
     if (!editor || !matchesConfiguredLanguage(editor.document)) {
@@ -193,24 +199,59 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             if (!profile) {
                 return;
             }
+            // Only guards "the Testing view has never been asked about this
+            // profile at all" (resolveHandler(undefined) never ran) — not
+            // materialization depth below that. The old `|| root.children.size
+            // === 0` half of this check was the actual bug (issue #18): it
+            // fired as soon as the root's *schema* children existed, which is
+            // exactly the state right after expanding the connection root and
+            // before anything below it has been expanded, and is also the
+            // single most common moment to invoke this command.
             const root = ctx.controller.items.get(rootId(profile));
-            if (!root || root.children.size === 0) {
+            if (!root) {
                 vscode.window.showErrorMessage(
-                    `utPLSQL: no tests discovered yet for '${profile}'. Expand it in the Testing view (or run "Refresh Tests") first.`
+                    `utPLSQL: '${profile}' has not been discovered yet. Open the Testing view (or run "Refresh Tests") first.`
                 );
                 return;
             }
-            const tags = dao.collectTags(
-                ctx.meta
-                    .valuesForProfile(profile)
-                    .map((m) => m.row)
-                    .filter((row): row is NonNullable<typeof row> => row !== undefined)
+            // Reads the full discovery row set (controller.ts's
+            // suiteRowsCache, via getSuiteRows) instead of MetaStore, which
+            // only holds rows for TestItems the lazily-materializing tree has
+            // actually built — a suite the user never expanded contributed no
+            // tags there even though its --%tags(...) annotations exist
+            // (issue #18). The round trip this can trigger is the same one
+            // resolveHandler already pays for when the tree gets expanded;
+            // wrapping it in a progress notification here means the command
+            // doesn't look hung while a first call (or one after Refresh
+            // Tests) is still in flight.
+            const rows = await vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Notification, title: `utPLSQL: discovering tests in '${profile}'…` },
+                () => getSuiteRows(profile, (raw) => logUnknownItemType(ctx, profile, raw))
             );
+            if (rows.length === 0) {
+                vscode.window.showErrorMessage(`utPLSQL: no rows discovered for this profile ('${profile}'). Run "Refresh Tests" first.`);
+                return;
+            }
+            const tags = dao.collectTags(rows);
             if (tags.length === 0) {
                 vscode.window.showErrorMessage(`utPLSQL: no '--%tags(...)' annotations found among the discovered tests for '${profile}'.`);
                 return;
             }
-            const selected = await vscode.window.showQuickPick(tags, {
+            // Tag -> number of discovered rows carrying it — free once the
+            // full row set is in hand, and tells the user up front roughly
+            // how much a tag will run instead of them finding out only after
+            // starting it.
+            const counts = new Map<string, number>();
+            for (const row of rows) {
+                for (const tag of (row.tags ?? '').split(',').map((t) => t.trim()).filter((t) => t.length > 0)) {
+                    counts.set(tag, (counts.get(tag) ?? 0) + 1);
+                }
+            }
+            const items = tags.map((tag) => {
+                const count = counts.get(tag) ?? 0;
+                return { label: tag, description: `${count} test${count === 1 ? '' : 's'}` };
+            });
+            const selected = await vscode.window.showQuickPick(items, {
                 title: `Run tests tagged in '${profile}'`,
                 canPickMany: true,
                 placeHolder: 'Select one or more tags — tests are run if they carry any of them'
@@ -221,7 +262,7 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             const request = new vscode.TestRunRequest([root]);
             const tokenSource = new vscode.CancellationTokenSource();
             try {
-                await runTests(ctx, request, tokenSource.token, { tags: selected });
+                await runTests(ctx, request, tokenSource.token, { tags: selected.map((s) => s.label) });
             } finally {
                 tokenSource.dispose();
             }
@@ -300,14 +341,47 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             }
             const runPath = `${resolved.owner}:${resolved.packageName}`;
 
-            const producerConn = await pool.getConnection();
-            const consumerConn = await pool.getConnection();
-            let output: string;
-            try {
-                output = await runWithReporterDao(producerConn, consumerConn, reporterName, [runPath], readReporterOptions());
-            } finally {
-                await producerConn.close();
-                await consumerConn.close();
+            // Gives the quick cursor shortcut the same visible, cancellable
+            // operation the "Export with Reporter" run profile now has
+            // (runReporterExport, reporterProfile.ts) — previously this
+            // command had no cancellation token at all, so the only way to
+            // stop a wedged export was to reload the extension host.
+            const { output, cancelled } = await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: `utPLSQL: exporting '${resolved.packageName}' with ${reporterName}…`,
+                    cancellable: true
+                },
+                async (progress, token) => {
+                    const producerConn = await pool.getConnection();
+                    const consumerConn = await pool.getConnection();
+                    let result: Awaited<ReturnType<typeof runWithReporterDao>>;
+                    try {
+                        result = await runWithReporterDao(producerConn, consumerConn, reporterName, [runPath], readReporterOptions(), token, (message) =>
+                            progress.report({ message })
+                        );
+                    } finally {
+                        await producerConn.close().catch(() => undefined);
+                        // Tolerant: a cancelled result already had this same
+                        // connection broken and drop-closed by
+                        // runWithReporterDao's cancelConsumer(), so a second
+                        // close() on it throwing is expected, not a failure.
+                        await consumerConn.close().catch(() => undefined);
+                    }
+                    // Only after both connections are safely closed — same
+                    // ordering as runOneProfile's finally block
+                    // (runHandler.ts) and for the same reason: recyclePool()'s
+                    // pool.close(0) must not race a still-executing statement
+                    // on producerConn.
+                    if (result.cancelled) {
+                        await recyclePool(resolved.profile);
+                    }
+                    return result;
+                }
+            );
+            if (cancelled) {
+                ctx.output.appendLine(`utPLSQL: export of '${resolved.packageName}' cancelled.`);
+                return;
             }
 
             const target = await vscode.window.showQuickPick(['Show in Output Channel', 'Save to File'], {

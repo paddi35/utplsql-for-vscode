@@ -99,6 +99,15 @@ Two settings, both off by default:
   (`pre-suite`, `pre-test`, `post-test`, one `received event` line per row)
   now sit behind this setting instead of always running, since at ~30,000+
   events for a full fixture run they were a measurable cost of their own.
+  Two more lines in `runOneProfile` (`src/testing/runHandler.ts`) moved
+  behind it the same way: the pre-run line listing every selected
+  `TestItem.id` (≈1 MB in a single `appendLine` at the documented
+  1000-package fixture scale — a run selects every path-bearing
+  suite/context/test, not just leaves) and the full generated produce SQL,
+  each now replaced unconditionally by a short, count-bounded summary
+  (`src/testing/runLogging.ts`). The produce SQL is still logged
+  unconditionally on the failure path, since it's the one thing genuinely
+  useful when a run fails.
 
 ## Manual checklist (real Extension Host, real tree view)
 

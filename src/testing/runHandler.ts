@@ -7,6 +7,7 @@ import { getCachedVersion } from '../db/versionCache';
 import {
     CoverageOptions,
     ProduceOptions,
+    ProduceSql,
     buildProduceSql,
     cancelConsumer,
     consumeNamedReporter,
@@ -26,6 +27,7 @@ import {
 import { escalateStatus } from '../model/tree';
 import { OwnedPath, dedupPathList, parseId, pathId } from './ids';
 import { UtplsqlContext } from './model';
+import { formatCoverageScopeLine, formatProduceSqlLine, formatRunFailureLines, formatRunPathsLine, summarizeRun } from './runLogging';
 import { measure, PerfCounter } from '../perf';
 
 const CALLER_LINE_RE = /"[^"]+",\s+line\s*([0-9]+)/i;
@@ -303,7 +305,16 @@ async function runOneProfile(
     }
     const id = newReporterId();
     const runPaths = paths.map((p) => `${p.owner}:${p.suitepath}`);
-    ctx.output.appendLine(`utPLSQL: run paths for '${profile}' = ${JSON.stringify(runPaths)} (from ${items.length} selected item(s): ${items.map((i) => i.id).join(', ')})`);
+    // Unconditional but bounded by counts, not contents (see runLogging.ts's
+    // doc comment for the ~1MB-per-call incident this replaces on "Run All"
+    // at the documented 1000-package/~15,000-test fixture scale) -- the full
+    // id list moves behind trace(), the same convention the per-event lines
+    // below already use.
+    ctx.output.appendLine(summarizeRun(profile, runPaths, items));
+    trace(ctx, formatRunPathsLine(profile, runPaths, items));
+    if (options.coverage) {
+        ctx.output.appendLine(formatCoverageScopeLine(options.coverage.includeObjects?.length ?? 0, options.coverage.fileMappings.length));
+    }
 
     let cancelled = false;
     const cancelSub = token.onCancellationRequested(() => {
@@ -322,6 +333,11 @@ async function runOneProfile(
     // rest be explicitly marked skipped afterward, instead of being left to
     // show a permanent "enqueued" spinner in the Test Explorer.
     const finalizedIds = new Set<string>();
+    // Declared here (not with `const` at its point of assignment below) so
+    // the catch block further down can still log the produce SQL on failure
+    // even though it's only built partway through the try — see that catch
+    // clause for why that log line exists unconditionally.
+    let produced: ProduceSql | undefined;
     try {
         // Consumer must open its cursor before the producer starts, to avoid
         // the header-table race (SQL Developer issue #80 / ORA-00001 on the
@@ -337,8 +353,10 @@ async function runOneProfile(
             randomOrder: options.randomOrder,
             seed: options.randomOrderSeed
         };
-        const produced = buildProduceSql(id, runPaths, produceOptions);
-        ctx.output.appendLine(`utPLSQL: produce SQL:\n${produced.sql}`);
+        produced = buildProduceSql(id, runPaths, produceOptions);
+        // Behind utplsql.trace on the normal path — see the catch block
+        // below for the unconditional copy on failure.
+        trace(ctx, formatProduceSqlLine(produced.sql));
         // The producer runs concurrently with the consumer loop below and can
         // fail long before the await further down is reached — a bad suite
         // path or a compile error in the block fails almost immediately,
@@ -475,7 +493,14 @@ async function runOneProfile(
         return {};
     } catch (err) {
         items.forEach((i) => run.errored(i, new vscode.TestMessage(String(err))));
-        ctx.output.appendLine(`utPLSQL: run failed for profile '${profile}': ${String(err)}`);
+        // formatRunFailureLines() adds the produce SQL unconditionally
+        // (regardless of utplsql.trace, independent of the trace()-gated
+        // copy above) when it had already been built: the produce SQL is
+        // the one thing a user genuinely wants when a run fails, so
+        // debugging a failure shouldn't require reproducing it a second time
+        // with tracing turned on. It logs that SQL once per failed run, not
+        // once per errored item, regardless of how many `items` this run had.
+        formatRunFailureLines(profile, err, produced?.sql).forEach((line) => ctx.output.appendLine(line));
         return {};
     } finally {
         cancelSub.dispose();
