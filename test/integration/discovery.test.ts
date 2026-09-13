@@ -3,6 +3,7 @@ import { Connection } from 'oracledb';
 import * as dao from '../../src/db/utplsqlDao';
 import { createSingleFlightCache } from '../../src/testing/singleFlight';
 import { createObjectTypeCache, ObjectType } from '../../src/testing/objectTypeCache';
+import { Candidate, candidateLabel } from '../../src/commands/resolveTarget';
 import { getTestConnection, closeTestPool, TEST_OWNER } from './support/db';
 import {
     installFixture,
@@ -127,6 +128,32 @@ describe('utplsqlDao discovery against a real schema [integration]', function ()
     it('lists calc_pkg as a testable unit for AP9 test generation', async () => {
         const units = await dao.testables(conn, TEST_OWNER);
         assert.ok(units.some((u) => u.objectName === 'CALC_PKG' && u.objectType === 'PACKAGE'));
+    });
+
+    it('the generateTest QuickPick candidate list built from testables() has no duplicate labels and is stable in order across two calls (issue #29)', async () => {
+        // Reproduces testableCandidates()'s mapping (commands/index.ts) and
+        // chooseTarget()'s dedup-by-label-then-sort (resolveTarget.ts) --
+        // generateTest's real QuickPick fallback candidate-building path --
+        // against the live testables() result, using the same exported
+        // candidateLabel() helper those call sites use. Regression target
+        // named in the issue: the old ad hoc `arr.indexOf(n) === i` dedup in
+        // commands/index.ts:349 operated on procedure names only, not on the
+        // OWNER.OBJECT[.PROCEDURE] label chooseTarget actually offers.
+        const buildLabels = async (): Promise<string[]> => {
+            const units = await dao.testables(conn, TEST_OWNER);
+            const candidates: Candidate[] = units.map((u) => ({ owner: u.objectOwner, packageName: u.objectName, procedureName: u.subobjectName }));
+            const byLabel = new Map<string, Candidate>();
+            candidates.forEach((c) => byLabel.set(candidateLabel(c), c));
+            return [...byLabel.keys()].sort();
+        };
+
+        const first = await buildLabels();
+        assert.ok(first.length > 0, 'expected at least one candidate from a schema with testable units');
+        assert.deepEqual(first, [...new Set(first)], 'expected no duplicate OWNER.OBJECT[.PROCEDURE] labels');
+        assert.deepEqual(first, [...first].sort(), 'expected a stable (sorted) QuickPick order');
+
+        const second = await buildLabels();
+        assert.deepEqual(second, first, 'expected the same candidate list, in the same order, across two independent calls');
     });
 
     it('includes() reads dependencies forwards: calc_pkg does not list its own test package', async () => {
