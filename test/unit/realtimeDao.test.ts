@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
-import { buildProduceSql, CoverageOptions } from '../../src/db/realtimeDao';
+import { Connection } from 'oracledb';
+import { buildProduceSql, consumeNamedReporter, CoverageOptions } from '../../src/db/realtimeDao';
+
+/** A Connection double whose every method fails the test if called — proves a code path never touches it. */
+function unusedConnection(): Connection {
+    const fail = (name: string) => async () => {
+        throw new Error(`${name}() should not have been called`);
+    };
+    return { execute: fail('execute') } as unknown as Connection;
+}
 
 describe('buildProduceSql', () => {
     it('quotes run paths and omits a_tags when none are given', () => {
@@ -126,5 +135,14 @@ describe('buildProduceSql', () => {
             fileMappings: []
         };
         assert.throws(() => buildProduceSql('abc123', ['UT3'], { coverage }), /invalid include object/);
+    });
+});
+
+describe('consumeNamedReporter', () => {
+    it('rejects a reporter type that is not a plain identifier before touching the connection', async () => {
+        await assert.rejects(
+            consumeNamedReporter(unusedConnection(), "ut_junit_reporter(); harmful_call; --", 'abc123'),
+            /invalid reporter type/
+        );
     });
 });

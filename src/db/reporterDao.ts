@@ -1,5 +1,5 @@
 import oracledb, { Connection, ResultSet } from 'oracledb';
-import { DEFAULT_INITIAL_TIMEOUT_SEC, DEFAULT_NEXT_EVENT_TIMEOUT_SEC, cancelConsumer, newReporterId } from './realtimeDao';
+import { DEFAULT_INITIAL_TIMEOUT_SEC, DEFAULT_NEXT_EVENT_TIMEOUT_SEC, cancelConsumer, isPlainIdentifier, newReporterId } from './realtimeDao';
 
 function quoteLiteral(value: string): string {
     return `'${value.replace(/'/g, "''")}'`;
@@ -18,6 +18,9 @@ export interface RunWithReporterOptions {
 
 /** Pure SQL builder for runWithReporter's producer block, split out so the a_color_console/a_client_character_set wiring is unit-testable without a real connection. */
 export function buildRunWithReporterSql(id: string, reporterType: string, paths: string[], options: RunWithReporterOptions = {}): string {
+    if (!isPlainIdentifier(reporterType)) {
+        throw new Error(`utPLSQL: invalid reporter type '${reporterType}' — expected [A-Za-z0-9_$#.]+`);
+    }
     // No separate output_buffer.init() call: set_reporter_id() already runs
     // output_buffer.init(a_reporter_id) internally (see realtimeDao.ts's
     // reportersClause doc comment) — calling init() again afterward with no

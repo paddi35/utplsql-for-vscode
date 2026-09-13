@@ -24,6 +24,10 @@ describe('buildRunWithReporterSql', () => {
         const sql = buildRunWithReporterSql('abc123', 'ut_junit_reporter', ['UT3']);
         assert.match(sql, /l_reporter ut_junit_reporter := ut_junit_reporter\(\)/);
     });
+
+    it('rejects a reporter type that is not a plain identifier', () => {
+        assert.throws(() => buildRunWithReporterSql('abc123', "ut_junit_reporter(); harmful_call; --", ['UT3']), /invalid reporter type/);
+    });
 });
 
 /**

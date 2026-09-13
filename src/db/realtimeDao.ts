@@ -331,6 +331,7 @@ export async function* streamRows(rs: ResultSet<Record<string, unknown>>): Async
  * streaming needed since there is no live progress to show for these.
  */
 export async function consumeNamedReporter(conn: Connection, reporterType: string, id: string): Promise<string> {
+    validateIdentifier(reporterType, 'reporter type');
     const sql = `DECLARE
    l_reporter ${reporterType} := ${reporterType}();
 BEGIN
