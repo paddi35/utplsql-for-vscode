@@ -64,6 +64,22 @@ function unusedConnection(): Connection {
     return { execute: fail('execute'), break: fail('break'), close: fail('close') } as unknown as Connection;
 }
 
+describe('runWithReporter reporter type validation', () => {
+    it('rejects a reporter type that is not a plain identifier before either connection is touched', async () => {
+        const { signal } = fakeToken();
+        // Both connections are unusedConnection(): if runWithReporter ever
+        // let an invalid reporterType reach consumerConn.execute(consumeSql)
+        // — e.g. because a future refactor reordered consumeSql ahead of
+        // produceSql and dropped this guard — that fake throws its own
+        // "execute() should not have been called" error instead, which the
+        // regex below does not match, failing this test for the right reason.
+        await assert.rejects(
+            () => runWithReporter(unusedConnection(), unusedConnection(), 'ut_junit_reporter(); harmful_call; --', ['UT3:test_pkg'], {}, signal),
+            /invalid reporter type/
+        );
+    });
+});
+
 describe('runWithReporter cancellation', () => {
     it('an already-cancelled token short-circuits before either connection is sent a single statement, and resolves rather than hanging', async () => {
         const { signal } = fakeToken(true);

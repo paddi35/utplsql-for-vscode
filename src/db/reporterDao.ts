@@ -156,6 +156,16 @@ export async function runWithReporter(
     if (token?.isCancellationRequested) {
         return { output: '', cancelled: true };
     }
+    // buildRunWithReporterSql below already refuses an invalid reporterType
+    // before returning produceSql, which today also protects consumeSql —
+    // built further down, from the same reporterType, and never through a
+    // validated builder of its own — purely because it happens to run
+    // second in this function. Checked again here so that guarantee holds
+    // even if the two statements are ever reordered, instead of resting on
+    // source order alone.
+    if (!isPlainIdentifier(reporterType)) {
+        throw new Error(`utPLSQL: invalid reporter type '${reporterType}' — expected [A-Za-z0-9_$#.]+`);
+    }
 
     const id = newReporterId();
     const produceSql = buildRunWithReporterSql(id, reporterType, paths, options);
