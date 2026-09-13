@@ -101,6 +101,9 @@ const settle = (ms: number): Promise<void> => new Promise((resolve) => setTimeou
  */
 const DEBOUNCE_SETTLE_MS = 700;
 
+/** The package these cases index and re-index, as SourceIndex keys it (upper-cased, no owner). */
+const PACKAGE_NAME = 'TEST_CALC_PKG';
+
 /**
  * Builds the #20/#26 end-to-end cases as `[name, fn]` pairs, in the same
  * shape testExplorer.e2e.test.ts's own `cases` array uses, so its existing
@@ -161,9 +164,20 @@ export function buildSourceIndexWatcherCases(ctx: UtplsqlContext, pkg: vscode.Te
                 const doc = await vscode.workspace.openTextDocument(fileUri);
                 await vscode.workspace.openTextDocument(scratchUri);
 
-                const before = findTestItem(pkg, 'adds two numbers correctly');
-                assert.ok(before?.range, 'expected test_add to already have a range from the previous case');
-                const originalLine = before!.range!.start.line;
+                // Asserted against SourceIndex, not against the TestItem's
+                // range. A TestItem's range does not come from the local file
+                // at all: resolveLocation (controller.ts) takes the *file* from
+                // SourceIndex and the *line* from the row's itemLineNo, i.e.
+                // from what utPLSQL reports out of the database. Editing a
+                // local file therefore cannot move a TestItem, by design --
+                // only recompiling the database object can. What #20 actually
+                // fixes is that the index itself stays current, which is what
+                // decides which file a test resolves to and what
+                // getPathAtCursor answers for run-at-cursor, so that is what
+                // this case has to look at.
+                const beforeLocation = ctx.sourceIndex.lookupProcedure(PACKAGE_NAME, 'TEST_ADD');
+                assert.ok(beforeLocation, 'expected TEST_ADD to already be indexed from the previous case');
+                const originalLine = beforeLocation!.range.start.line;
 
                 const shiftedBody = shiftDown(doc.getText(), 'procedure test_add', 7);
                 const edit = new vscode.WorkspaceEdit();
@@ -180,23 +194,34 @@ export function buildSourceIndexWatcherCases(ctx: UtplsqlContext, pkg: vscode.Te
 
                 await doc.save();
                 await settle(DEBOUNCE_SETTLE_MS);
-                await resolveItem(ctx.controller, pkg);
 
-                const after = findTestItem(pkg, 'adds two numbers correctly');
-                assert.ok(after?.range, 'expected test_add to still resolve to a location after the edit');
+                const after = ctx.sourceIndex.lookupProcedure(PACKAGE_NAME, 'TEST_ADD');
+                assert.ok(after, 'expected TEST_ADD to still be indexed after the edit');
                 assert.equal(
-                    after!.range!.start.line,
+                    after!.range.start.line,
                     originalLine + 7,
-                    "test_add's TestItem must point at its new line — with the pre-#20-fix single shared timer, scheduling scratch_pkg.pkb's reindex would have cancelled this one and left the stale pre-edit line"
+                    "TEST_ADD must be indexed at its new line — with the pre-#20-fix single shared timer, scheduling scratch_pkg.pkb's reindex would have cancelled this one and left the stale pre-edit line"
+                );
+
+                // The other half of the same guarantee: the second document
+                // was not merely spared from cancelling this one, it was
+                // itself indexed. A debouncer that kept one timer but
+                // reordered the victims would pass the assertion above alone.
+                assert.ok(
+                    ctx.sourceIndex.lookupPackage('SCRATCH_PKG'),
+                    'expected scratch_pkg.pkb to have been indexed too, not just spared from cancelling the other reindex'
                 );
             }
         ],
         [
             'a file changed on disk outside the editor is re-indexed by the FileSystemWatcher without a reload',
             async () => {
-                const before = findTestItem(pkg, 'test nested inside a suite context');
-                assert.ok(before?.range, 'expected test_nested to already have a range');
-                const originalLine = before!.range!.start.line;
+                // Again against SourceIndex rather than the TestItem -- see
+                // the previous case for why a TestItem cannot move when only
+                // the local file changes.
+                const before = ctx.sourceIndex.lookupProcedure(PACKAGE_NAME, 'TEST_NESTED');
+                assert.ok(before, 'expected TEST_NESTED to already be indexed');
+                const originalLine = before!.range.start.line;
 
                 const bytes = await vscode.workspace.fs.readFile(fileUri);
                 const shifted = shiftDown(Buffer.from(bytes).toString('utf8'), 'procedure test_nested', 4);
@@ -215,14 +240,13 @@ export function buildSourceIndexWatcherCases(ctx: UtplsqlContext, pkg: vscode.Te
                 await vscode.workspace.fs.writeFile(fileUri, Buffer.from(shifted, 'utf8'));
 
                 await settle(DEBOUNCE_SETTLE_MS);
-                await resolveItem(ctx.controller, pkg);
 
-                const after = findTestItem(pkg, 'test nested inside a suite context');
-                assert.ok(after?.range, 'expected test_nested to still resolve to a location');
+                const after = ctx.sourceIndex.lookupProcedure(PACKAGE_NAME, 'TEST_NESTED');
+                assert.ok(after, 'expected TEST_NESTED to still be indexed after the on-disk edit');
                 assert.equal(
-                    after!.range!.start.line,
+                    after!.range.start.line,
                     originalLine + 4,
-                    "test_nested's TestItem must reflect the on-disk edit even though no editor ever opened it for this change"
+                    'TEST_NESTED must be indexed at its new line even though no editor ever opened it for this change — without a FileSystemWatcher nothing would have noticed the write at all'
                 );
             }
         ],

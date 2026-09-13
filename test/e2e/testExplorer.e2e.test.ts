@@ -296,8 +296,28 @@ async function testUntracedRunKeepsOutputChannelSmall(ctx: UtplsqlContext, pkg: 
  * fix, get() would have returned the poisoned workspace value first and
  * this would instead fail (or hang) trying to reach the unroutable host.
  */
+/**
+ * Writes the e2e workspace's .vscode/settings.json and returns its path.
+ *
+ * Both workspace-scope regressions (issues #11 and #12) need a workspace to
+ * *contribute* a setting, which is not the same as asking VS Code to write
+ * one: the configuration API refuses unregistered keys outright, and for a
+ * machine-scoped key it accepts the call and then discards the value. Going
+ * through the file is what a hostile repository would actually do.
+ */
+function writeWorkspaceSettings(settings: Record<string, unknown>): string {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    assert.ok(folder, 'e2e workspace has no open folder to write .vscode/settings.json into');
+    const vscodeDir = path.join(folder!.uri.fsPath, '.vscode');
+    fs.mkdirSync(vscodeDir, { recursive: true });
+    const settingsPath = path.join(vscodeDir, 'settings.json');
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+    return settingsPath;
+}
+
 async function testWorkspaceScopedSqlDeveloperTnsPathIsIgnored(ctx: UtplsqlContext, user: string, password: string, owner: string): Promise<void> {
     const poisonedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'utplsql-e2e-poisoned-tns-'));
+    let settingsPath: string | undefined;
     try {
         const poisonedTnsnames =
             `${TNS_ALIAS_ISSUE_12} =\n` +
@@ -307,9 +327,22 @@ async function testWorkspaceScopedSqlDeveloperTnsPathIsIgnored(ctx: UtplsqlConte
             `  )\n`;
         fs.writeFileSync(path.join(poisonedDir, 'tnsnames.ora'), poisonedTnsnames, 'utf8');
 
-        await vscode.workspace
-            .getConfiguration('sqldeveloper')
-            .update('connections.tnsConfiguration.path', poisonedDir, vscode.ConfigurationTarget.Workspace);
+        // Written into .vscode/settings.json directly rather than through
+        // getConfiguration().update(): the SQL Developer extension is not
+        // installed in the test host, so its setting is not a registered
+        // configuration and VS Code refuses to write it through the API
+        // ("Unable to write to Workspace Settings because ... is not a
+        // registered configuration"). Reading an unregistered setting works
+        // regardless, which is exactly the situation this regression is
+        // about -- and writing the file is also closer to the threat being
+        // modelled: a repository that ships a settings.json, not an
+        // extension politely calling the configuration API.
+        // testWorkspacePerfSettingsAreIgnored below writes the same file the
+        // same way, for the same reason.
+        settingsPath = writeWorkspaceSettings({ 'sqldeveloper.connections.tnsConfiguration.path': poisonedDir });
+        // VS Code picks an on-disk settings.json change up via its own file
+        // watcher, asynchronously.
+        await new Promise((r) => setTimeout(r, 500));
 
         await vscode.workspace.getConfiguration('utplsql').update(
             'connections',
@@ -336,9 +369,10 @@ async function testWorkspaceScopedSqlDeveloperTnsPathIsIgnored(ctx: UtplsqlConte
         const pkg = findChildByLabel(schema.children, PACKAGE_LABEL);
         assert.ok(pkg, `fixture package '${PACKAGE_LABEL}' not found via the TNS-alias profile`);
     } finally {
-        await vscode.workspace
-            .getConfiguration('sqldeveloper')
-            .update('connections.tnsConfiguration.path', undefined, vscode.ConfigurationTarget.Workspace);
+        if (settingsPath) {
+            fs.rmSync(settingsPath, { force: true });
+        }
+        await new Promise((r) => setTimeout(r, 200));
         fs.rmSync(poisonedDir, { recursive: true, force: true });
     }
 }

@@ -13,15 +13,24 @@ const sourceDir = path.join(__dirname, '..', '..', 'integration', 'support');
 const targetDir = path.join(__dirname, '..', 'out');
 fs.mkdirSync(targetDir, { recursive: true });
 
-// xssFixture.sql: fixture.ts reads it at *module load* time (a top-level
-// fs.readFileSync, unconditional), so simply importing fixture.ts -- which
-// testExplorer.e2e.test.ts already does for installFixture -- fails with
-// ENOENT the moment a real extension host requires the bundle, regardless of
-// whether any e2e case actually calls installXssFixture(). This was missing
-// here before the coverage e2e cases needed installXssFixture (issue #13's
-// stronger HTML-report case), which is what surfaced it.
-for (const file of ['fixture.sql', 'snippetsFixture.sql', 'xssFixture.sql']) {
-    fs.copyFileSync(path.join(sourceDir, file), path.join(targetDir, file));
+// Every .sql in that directory, not a list of the ones currently needed.
+//
+// fixture.ts reads each of them at *module load* time (top-level
+// fs.readFileSync, unconditional), so importing it at all -- which
+// testExplorer.e2e.test.ts does for installFixture -- fails with ENOENT the
+// moment a real extension host requires the bundle, whether or not any case
+// calls the matching install function. A hardcoded list therefore turns
+// "someone added a fixture" into "the whole e2e suite dies before the first
+// test", with a stack trace pointing at the bundle rather than at the list.
+//
+// That has now happened twice: once for xssFixture.sql, and again for
+// deepTagsFixture.sql, which issue #18's tag tests added afterwards. Reading
+// the directory removes the failure mode rather than fixing this instance of
+// it; test/unit/copyFixtures.test.ts pins that it stays that way.
+for (const file of fs.readdirSync(sourceDir)) {
+    if (file.endsWith('.sql')) {
+        fs.copyFileSync(path.join(sourceDir, file), path.join(targetDir, file));
+    }
 }
 
 /**
