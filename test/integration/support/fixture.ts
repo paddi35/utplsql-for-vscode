@@ -5,6 +5,7 @@ import * as path from 'node:path';
 const FIXTURE_SQL = fs.readFileSync(path.join(__dirname, 'fixture.sql'), 'utf8');
 const SNIPPETS_FIXTURE_SQL = fs.readFileSync(path.join(__dirname, 'snippetsFixture.sql'), 'utf8');
 const XSS_FIXTURE_SQL = fs.readFileSync(path.join(__dirname, 'xssFixture.sql'), 'utf8');
+const DEEP_TAGS_FIXTURE_SQL = fs.readFileSync(path.join(__dirname, 'deepTagsFixture.sql'), 'utf8');
 
 /** Splits a sqlplus-style script on "/" terminator lines, like the docker init scripts do. */
 function splitBlocks(sql: string): string[] {
@@ -45,6 +46,30 @@ export const XSS_TEST_PATH = 'test_xss_pkg.test_calls_payload_pkg';
 
 export async function installXssFixture(conn: Connection): Promise<void> {
     for (const block of splitBlocks(XSS_FIXTURE_SQL)) {
+        await conn.execute(block);
+    }
+}
+
+/**
+ * test_deep_tags_pkg's --%suitepath(...) group, --%context and its one
+ * --%tags(deep_only) test (see deepTagsFixture.sql) -- issue #18's "tag
+ * lives below anything materialized" regression. Only the group's own path
+ * is asserted on literally (it is the annotation's argument verbatim, the
+ * same convention SUITEPATH_GROUP_PATH above documents for test_suitepath_pkg);
+ * the nested context's exact path segment naming (observed elsewhere in this
+ * suite as "<name>_context_#<n>", e.g. test_calc_pkg's --%context(nested) ->
+ * path segment "nested_context_#1") is not re-asserted here; the deep-tags
+ * tests below match by item_name and tag instead, which does not depend on
+ * that naming detail either way.
+ */
+export const DEEP_TAGS_FIXTURE_OWNER_OBJECT = 'TEST_DEEP_TAGS_PKG';
+export const DEEP_TAGS_SUITEPATH_GROUP_PATH = 'deep.tags.group';
+export const DEEP_TAGS_TAG = 'deep_only';
+export const DEEP_TAGS_TAGGED_TEST = 'TEST_DEEP_TAGGED';
+export const DEEP_TAGS_UNTAGGED_TEST = 'TEST_DEEP_UNTAGGED';
+
+export async function installDeepTagsFixture(conn: Connection): Promise<void> {
+    for (const block of splitBlocks(DEEP_TAGS_FIXTURE_SQL)) {
         await conn.execute(block);
     }
 }

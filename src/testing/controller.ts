@@ -88,6 +88,21 @@ function fetchSuiteRows(profile: string, onUnknownItemType: (raw: unknown) => vo
     });
 }
 
+/**
+ * Public accessor for the same discovery-rows cache fetchSuiteRows uses,
+ * for callers outside this module that need the full row set for a profile
+ * without being limited to whatever the Test Explorer tree has actually
+ * materialized so far: utplsql.runWithTags's tag list, and
+ * utplsql.runTestAtCursor's/utplsql.runWithReporter's/utplsql.generateTest's
+ * QuickPick fallback candidates, all in commands/index.ts (issues #18, #29).
+ * Single-flighted and cached exactly like every other fetchSuiteRows caller
+ * — including resolveHandler's own — so calling this doesn't cost an extra
+ * round trip beyond whatever discovery already ran (or is about to).
+ */
+export function getSuiteRows(profile: string, onUnknownItemType?: (raw: unknown) => void): Promise<SuiteInfoRow[]> {
+    return fetchSuiteRows(profile, onUnknownItemType ?? (() => undefined));
+}
+
 let secretsRef: vscode.SecretStorage;
 function ctxSecrets(): vscode.SecretStorage {
     return secretsRef;
