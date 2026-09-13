@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 470" width="900" height="470" font-family="'Segoe UI',system-ui,-apple-system,sans-serif">
+  <title>The Testing view with a connection profile expanded</title>
+  <desc>A mock of the VS Code Testing sidebar. A connection profile is the root, below it the schema, the suite package, a context and the individual tests, with pass, fail and skipped states.</desc>
+
+  <rect width="900" height="470" fill="#12182a"/>
+
+  <!-- sidebar -->
+  <rect x="24" y="24" width="420" height="422" rx="8" fill="#252526" stroke="#2f3b52"/>
+  <rect x="24" y="24" width="420" height="36" rx="8" fill="#2d2d2d"/>
+  <rect x="24" y="50" width="420" height="10" fill="#2d2d2d"/>
+  <text x="42" y="47" fill="#cbd5e1" font-size="12.5" letter-spacing="0.8">TESTING</text>
+
+  <!-- toolbar icons -->
+  <g fill="none" stroke="#9aa7ba" stroke-width="1.6">
+    <path d="M336 36 l0 12 l10 -6 z" fill="#3ddc84" stroke="none"/>
+    <circle cx="366" cy="42" r="6"/><path d="M366 38 v5 h4"/>
+    <path d="M392 37 a6 6 0 1 0 6 -5" /><path d="M398 29 v5 h-5"/>
+    <path d="M418 36 h12 M418 42 h12 M418 48 h8"/>
+  </g>
+
+  <!-- tree -->
+  <g font-size="13">
+    <!-- root: connection -->
+    <path d="M48 84 l7 5 l-7 5 z" fill="#9aa7ba" transform="rotate(90 51.5 89)"/>
+    <circle cx="72" cy="89" r="6" fill="none" stroke="#6ec1ff" stroke-width="1.6"/>
+    <path d="M69 89 h6 M72 86 v6" stroke="#6ec1ff" stroke-width="1.6"/>
+    <text x="88" y="94" fill="#e6edf3" font-weight="600">dev</text>
+    <text x="126" y="94" fill="#6b7a90" font-size="11.5">utPLSQL 3.2.3</text>
+
+    <!-- schema -->
+    <path d="M68 110 l7 5 l-7 5 z" fill="#9aa7ba" transform="rotate(90 71.5 115)"/>
+    <ellipse cx="94" cy="112" rx="7" ry="2.8" fill="none" stroke="#6ec1ff" stroke-width="1.4"/>
+    <path d="M87 112 v6 a7 2.8 0 0 0 14 0 v-6" fill="none" stroke="#6ec1ff" stroke-width="1.4"/>
+    <text x="110" y="120" fill="#cbd5e1">UT3</text>
+
+    <!-- package -->
+    <path d="M88 136 l7 5 l-7 5 z" fill="#9aa7ba" transform="rotate(90 91.5 141)"/>
+    <rect x="108" y="135" width="13" height="11" rx="2" fill="none" stroke="#c8a2ff" stroke-width="1.4"/>
+    <text x="130" y="146" fill="#cbd5e1">test_calc_pkg</text>
+    <text x="238" y="146" fill="#6b7a90" font-size="11.5">calculator tests</text>
+
+    <!-- test 1 passed -->
+    <circle cx="126" cy="167" r="7" fill="#3ddc84"/>
+    <path d="M123 167 l2.5 2.5 l4.5 -5" stroke="#12182a" stroke-width="1.8" fill="none"/>
+    <text x="144" y="172" fill="#cbd5e1">test_add</text>
+    <text x="360" y="172" fill="#6b7a90" font-size="11.5" text-anchor="end">12ms</text>
+
+    <!-- test 2 failed -->
+    <circle cx="126" cy="193" r="7" fill="#f14c4c"/>
+    <path d="M123 190 l6 6 M129 190 l-6 6" stroke="#12182a" stroke-width="1.8"/>
+    <text x="144" y="198" fill="#f0a3a3">test_divide_by_zero</text>
+    <text x="360" y="198" fill="#6b7a90" font-size="11.5" text-anchor="end">8ms</text>
+
+    <!-- context -->
+    <path d="M108 214 l7 5 l-7 5 z" fill="#9aa7ba" transform="rotate(90 111.5 219)"/>
+    <rect x="128" y="213" width="13" height="11" rx="2" fill="none" stroke="#e0b062" stroke-width="1.4"/>
+    <text x="150" y="224" fill="#cbd5e1">nested</text>
+    <text x="208" y="224" fill="#6b7a90" font-size="11.5">--%context</text>
+
+    <!-- nested test -->
+    <circle cx="146" cy="245" r="7" fill="#3ddc84"/>
+    <path d="M143 245 l2.5 2.5 l4.5 -5" stroke="#12182a" stroke-width="1.8" fill="none"/>
+    <text x="164" y="250" fill="#cbd5e1">test_nested</text>
+
+    <!-- skipped -->
+    <circle cx="126" cy="271" r="7" fill="none" stroke="#8b98ab" stroke-width="1.6"/>
+    <path d="M122.5 271 h7" stroke="#8b98ab" stroke-width="1.8"/>
+    <text x="144" y="276" fill="#8b98ab">test_wip</text>
+    <rect x="214" y="264" width="60" height="15" rx="7.5" fill="#33384a"/>
+    <text x="244" y="275" fill="#9aa7ba" font-size="10.5" text-anchor="middle">disabled</text>
+
+    <!-- logical suite -->
+    <path d="M88 292 l7 5 l-7 5 z" fill="#9aa7ba"/>
+    <text x="110" y="302" fill="#8b98ab">a.b.c</text>
+    <text x="166" y="302" fill="#6b7a90" font-size="11.5">--%suitepath group</text>
+  </g>
+
+  <!-- failure detail panel -->
+  <rect x="468" y="24" width="408" height="230" rx="8" fill="#1e1e1e" stroke="#2f3b52"/>
+  <text x="488" y="52" fill="#f0a3a3" font-size="13" font-weight="600">test_divide_by_zero</text>
+  <text x="488" y="76" fill="#cbd5e1" font-size="12">Expected: ORA-01476</text>
+  <text x="488" y="96" fill="#cbd5e1" font-size="12">Actual:   no exception raised</text>
+  <rect x="488" y="112" width="368" height="1" fill="#2f3b52"/>
+  <text x="488" y="136" fill="#6ec1ff" font-size="12">test_calc_pkg.pkb:47</text>
+  <text x="488" y="160" fill="#6b7a90" font-size="11.5">Click the location to jump into the package body —</text>
+  <text x="488" y="178" fill="#6b7a90" font-size="11.5">the failing line itself, not the test procedure header.</text>
+  <rect x="488" y="198" width="368" height="36" rx="5" fill="#1b2b3d" stroke="#2d8cf0"/>
+  <text x="504" y="221" fill="#6ec1ff" font-size="11.5">Results stream in one test at a time, not all at the end.</text>
+
+  <!-- context menu -->
+  <rect x="468" y="278" width="408" height="168" rx="8" fill="#252526" stroke="#2f3b52"/>
+  <text x="488" y="304" fill="#8b98ab" font-size="11.5" letter-spacing="0.6">RIGHT-CLICK ANY ITEM</text>
+  <rect x="484" y="316" width="376" height="28" rx="4" fill="#04395e"/>
+  <text x="500" y="335" fill="#e6edf3" font-size="12.5">Run Test</text>
+  <text x="500" y="363" fill="#cbd5e1" font-size="12.5">Run with Coverage</text>
+  <rect x="484" y="374" width="376" height="1" fill="#2f3b52"/>
+  <text x="500" y="397" fill="#cbd5e1" font-size="12.5">utPLSQL: Run with Reporter (Export)</text>
+  <text x="500" y="423" fill="#cbd5e1" font-size="12.5">utPLSQL: Generate Test Package</text>
+</svg>
