@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { Connection } from 'oracledb';
 import { XMLParser } from 'fast-xml-parser';
 import { CoverageOptions } from '../../src/db/realtimeDao';
+import * as dao from '../../src/db/utplsqlDao';
+import { computeCoverageScope, CoverageScopeItem } from '../../src/testing/coverageScope';
 import { getTestPool, closeTestPool, TEST_OWNER } from './support/db';
 import { installFixture } from './support/fixture';
 import { runPathsAndCollect } from './support/runProfile';
@@ -101,6 +103,64 @@ describe('coverage scoping and output options against a real schema [integration
         assert.ok(
             coberturaDoc.coverage?.packages,
             'cobertura XML should have <coverage><packages> instead — confirms the two reporters produced distinct formats'
+        );
+    });
+});
+
+/**
+ * Issue #21: buildCoverageOptions() (coverage.ts) used to call dao.includes()
+ * once per selected TestItem, and get_suites_info returns one row per
+ * suite/context/test under a package (the same "every path-bearing
+ * descendant, not just leaves" shape groupRequest selects for a run — see
+ * runHandler.ts and docs/performance.md's "Known hotspots") — so a package
+ * with N such rows issued N identical *_dependencies queries. This exercises
+ * the real fix, computeCoverageScope (coverageScope.ts), against a live
+ * schema: a wrapped dao.includes counts its own invocations instead of
+ * requiring a v$sql lookup (which also needs a privilege this suite's user
+ * may not have), the same "call counter around the real dao call" pattern
+ * utplsqlDao.test.ts's single-flight regression test uses for getSuitesInfo.
+ */
+describe('buildCoverageOptions dependency-lookup batching against a real schema [integration] (issue #21)', function () {
+    this.timeout(30000);
+    let conn: Connection;
+
+    before(async () => {
+        const pool = await getTestPool();
+        conn = await pool.getConnection();
+        await installFixture(conn);
+    });
+
+    after(async () => {
+        await conn.close();
+        await closeTestPool();
+    });
+
+    it('queries *_dependencies exactly once for a package with several suite/context/test rows, not once per row', async () => {
+        const rows = await dao.getSuitesInfo(conn, TEST_OWNER, 'TEST_CALC_PKG');
+        // test_calc_pkg has 6 --%test procedures plus its own UT_SUITE row
+        // and a UT_SUITE_CONTEXT row for test_nested's --%context (see
+        // fixture.sql) — every one of them shares objectName='TEST_CALC_PKG',
+        // which is exactly the repetition that used to cost one round trip
+        // apiece.
+        assert.ok(rows.length >= 5, `expected several rows (suite + context + tests) for TEST_CALC_PKG, got ${rows.length}`);
+
+        const items: CoverageScopeItem[] = rows.map((r) => ({ owner: r.objectOwner, objectName: r.objectName }));
+
+        let calls = 0;
+        const includesFn = async (owner: string, names: string[]) => {
+            calls++;
+            return dao.includes(conn, owner, names, 'integration');
+        };
+
+        const scope = await computeCoverageScope(items, includesFn, { excludeObjects: [], schemesOverride: [], includeObjectsOverride: [] });
+
+        assert.equal(calls, 1, `expected exactly one batched dependencies query for ${rows.length} rows of the same package, got ${calls}`);
+        // Pure round-trip reduction, not a scope change: the same CALC_PKG
+        // dependency coverage.test.ts's own (unbatched, single-pair) call
+        // asserts on must still come back once the calls are batched.
+        assert.ok(
+            [...scope.includeObjects.values()].some((d) => d.owner === TEST_OWNER && d.name === 'CALC_PKG'),
+            `expected CALC_PKG among TEST_CALC_PKG's dependencies after batching, got ${JSON.stringify([...scope.includeObjects.values()])}`
         );
     });
 });
