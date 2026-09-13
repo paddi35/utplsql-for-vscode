@@ -76,6 +76,15 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
     const detailByUri = new Map<string, vscode.StatementCoverage[]>();
     detailedCoverage.set(run, detailByUri);
     const { randomOrder, randomOrderSeed } = readRandomOrderConfig();
+    const htmlReportEnabled = vscode.workspace.getConfiguration('utplsql').get<boolean>('coverage.htmlReport');
+    const reportsDir = vscode.Uri.joinPath(ctx.globalStorageUri, 'coverage-reports');
+    if (htmlReportEnabled) {
+        // Once per run, before any profile is processed — see
+        // clearPreviousReports' own doc comment for why this can't instead
+        // happen inside showHtmlReport, which runs once per profile.
+        await vscode.workspace.fs.createDirectory(reportsDir);
+        await clearPreviousReports(ctx, reportsDir);
+    }
     try {
         const grouped = await groupRequest(ctx, request);
         for (const [profile, group] of grouped) {
@@ -92,8 +101,8 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
             if (result.coverageXml) {
                 applyCoverage(ctx, run, detailByUri, result.coverageXml, built?.pathToUri ?? new Map());
             }
-            if (result.htmlReport && vscode.workspace.getConfiguration('utplsql').get<boolean>('coverage.htmlReport')) {
-                await showHtmlReport(ctx, result.htmlReport);
+            if (result.htmlReport && htmlReportEnabled) {
+                await showHtmlReport(ctx, result.htmlReport, reportsDir);
             }
             if (result.additionalCoverageXml) {
                 await offerAdditionalCoverageFile(ctx, result.additionalCoverageXml);
@@ -373,10 +382,18 @@ export async function loadDetailedCoverage(
  * report's verbatim package source — not just coverage percentages — to any
  * other local account, while global storage lives under the user's own
  * profile. A fresh, randomly-named file per call still avoids collisions
- * between reports from different profiles/runs in the same session; unlike
- * that, previous reports under the same directory are removed before each
- * new one is written, so at most one lingers between coverage runs instead
- * of accumulating for the life of the temp directory.
+ * between reports from different profiles/runs; unlike that, previous
+ * reports under the same directory are removed once per run — by
+ * runCoverage, before it starts iterating profiles — rather than once per
+ * profile here in showHtmlReport. A run over N profiles calls this function
+ * N times, each with its own still-open "report is ready" notification
+ * (the choice below is fire-and-forget, not awaited); clearing here instead
+ * of there would delete an earlier profile's report out from under its own
+ * unanswered notification the moment a later profile's report is written,
+ * so "Open in Browser" on that earlier notification would then fail. Once
+ * per run instead still keeps at most one run's worth of reports lingering
+ * between separate runs, instead of accumulating for the life of the
+ * extension's storage.
  *
  * Only the write is awaited, not the notification/open/save that follows —
  * this function's caller (runCoverage) awaits it before calling run.end(),
@@ -404,12 +421,9 @@ async function clearPreviousReports(ctx: UtplsqlContext, reportsDir: vscode.Uri)
     }
 }
 
-async function showHtmlReport(ctx: UtplsqlContext, html: string): Promise<void> {
+async function showHtmlReport(ctx: UtplsqlContext, html: string, reportsDir: vscode.Uri): Promise<void> {
     const hardened = withContentSecurityPolicy(html);
     const buffer = Buffer.from(hardened, 'utf8');
-    const reportsDir = vscode.Uri.joinPath(ctx.globalStorageUri, 'coverage-reports');
-    await vscode.workspace.fs.createDirectory(reportsDir);
-    await clearPreviousReports(ctx, reportsDir);
     const tempUri = vscode.Uri.joinPath(reportsDir, `utplsql-coverage-${randomUUID()}.html`);
     await vscode.workspace.fs.writeFile(tempUri, buffer);
     ctx.output.appendLine(`utPLSQL: coverage HTML report written to ${tempUri.fsPath}`);
