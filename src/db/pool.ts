@@ -19,7 +19,14 @@ const pools = new Map<string, oracledb.Pool>();
  */
 const SCHEMA_NAME_RE = /^[A-Za-z][A-Za-z0-9_$#]*$/;
 
-function validateSchemaName(schema: string): string {
+/**
+ * Exported so commands/index.ts's addConnection wizard (issue #25) can
+ * surface this same validation at entry — when defaultSchema is typed, and
+ * again defensively before persisting — instead of it firing for the first
+ * time much later, at pool-creation time, after the profile is already
+ * saved.
+ */
+export function validateSchemaName(schema: string): string {
     if (!SCHEMA_NAME_RE.test(schema)) {
         throw new Error(
             `utPLSQL: invalid defaultSchema '${schema}' — expected an unquoted Oracle identifier ([A-Za-z][A-Za-z0-9_$#]*).`
