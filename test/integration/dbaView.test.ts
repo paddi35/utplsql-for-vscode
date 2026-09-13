@@ -12,12 +12,13 @@ import { installFixture, FIXTURE_OWNER_OBJECT } from './support/fixture';
  * ORA-00942 for an unprivileged profile probed second, or a silently
  * downgraded coverage scope for a privileged one probed second.
  *
- * Needs a second, deliberately unprivileged DB user alongside the normal
- * fixture owner (see support/db.ts's UNPRIV_TEST_USER doc comment for why
- * that isn't part of the default docker-compose fixture). Every test here
- * skips itself via `this.skip()` when that user isn't configured, the same
- * way a missing optional fixture is handled elsewhere in this suite, rather
- * than failing.
+ * Needs two connections that see the data dictionary differently: the
+ * fixture owner, which may read dba_objects, and a second user which may
+ * not. The docker fixture provisions both (init-scripts/15-grant-dictionary-
+ * access.sh and 16-create-unprivileged-user.sh), so this runs out of the box
+ * there. Against a database without that second user every test here skips
+ * itself via `this.skip()` rather than failing -- see support/db.ts's
+ * UNPRIV_TEST_USER doc comment.
  */
 describe('per-profile dba_/all_ view caching against a real schema [integration]', function () {
     this.timeout(30000);

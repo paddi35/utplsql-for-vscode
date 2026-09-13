@@ -147,6 +147,16 @@ Point the integration tests at a different instance/schema with the `UTPLSQL_IT_
 `UTPLSQL_IT_PASSWORD` and `UTPLSQL_IT_CONNECT_STRING` environment variables (defaults match the
 `docker-compose.yml` setup above).
 
+The fixture also provisions a second, deliberately unprivileged user (`utplsql_vsc_unpriv`,
+holding nothing but `CREATE SESSION`) and grants the utPLSQL schema read access to
+`v$session` plus `dba_objects`/`dba_dependencies`/`dba_source`. Both are there for tests that
+cannot be written without them: the session-lifecycle assertions in `cancel.test.ts` and
+`pool.test.ts` need to observe sessions from outside themselves, and the per-profile
+`dba_`/`all_` caching regression needs two connections that see the data dictionary
+differently. Override the second user with `UTPLSQL_IT_UNPRIV_USER` and
+`UTPLSQL_IT_UNPRIV_PASSWORD`; where it does not exist, the tests that need it skip themselves
+rather than fail.
+
 ## Credits
 
 This extension's database protocol layer is a TypeScript port of
