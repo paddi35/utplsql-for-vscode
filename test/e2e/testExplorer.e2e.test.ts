@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { getTestPool, closeTestPool } from '../integration/support/db';
 import { installFixture } from '../integration/support/fixture';
@@ -176,12 +179,77 @@ async function testCancellationLeavesStateUsable(ctx: UtplsqlContext, pkg: vscod
 }
 
 /**
+ * The actual regression behind utplsql.perf.enabled/reportFile getting
+ * "scope": "machine": both used to be window-scoped, so a workspace's own
+ * .vscode/settings.json could turn perf tracing on and point its report
+ * file anywhere on disk, including outside the workspace, and the very
+ * first measure() span (materializeLevel, on any schema/path
+ * resolveHandler call) would append to it. This writes exactly that
+ * .vscode/settings.json shape into the already-open e2e workspace and
+ * proves both halves of the fix: (b) VS Code itself never exposes the
+ * workspace-level value to getConfiguration()/inspect() for a
+ * machine-scoped setting -- not just hidden in the Settings UI -- and (a) a
+ * real measure() span (re-resolving `schema`) never creates the outside
+ * path, which follows from perf.enabled reading back as its default
+ * `false` the same as if the file had never been written at all. Both
+ * settings being machine-scoped is what makes this scenario fully inert
+ * for a workspace-supplied config; src/perf.ts's own path validation
+ * (see test/unit/perf.test.ts and test/integration/perf.test.ts) is the
+ * separate belt-and-braces layer for a value that *did* come from a
+ * trusted user/machine setting.
+ */
+async function testWorkspacePerfSettingsAreIgnored(ctx: UtplsqlContext, schema: vscode.TestItem): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    assert.ok(folder, 'e2e workspace has no open folder to write .vscode/settings.json into');
+    const vscodeDir = path.join(folder.uri.fsPath, '.vscode');
+    fs.mkdirSync(vscodeDir, { recursive: true });
+    const settingsPath = path.join(vscodeDir, 'settings.json');
+    const previousSettings = fs.existsSync(settingsPath) ? fs.readFileSync(settingsPath, 'utf8') : undefined;
+    const outsidePath = path.join(os.tmpdir(), `utplsql-e2e-perf-exploit-${Date.now()}.jsonl`);
+
+    try {
+        fs.writeFileSync(settingsPath, JSON.stringify({ 'utplsql.perf.enabled': true, 'utplsql.perf.reportFile': outsidePath }, null, 2));
+        // VS Code's configuration service picks up an on-disk
+        // .vscode/settings.json change via its file watcher asynchronously;
+        // the cancellation case above waits on a comparable fixed delay for
+        // a different async-VS-Code-internals reason.
+        await new Promise((r) => setTimeout(r, 500));
+
+        const inspectedEnabled = vscode.workspace.getConfiguration('utplsql').inspect<boolean>('perf.enabled');
+        assert.equal(
+            inspectedEnabled?.workspaceValue,
+            undefined,
+            'utplsql.perf.enabled must not accept a workspace-level value now that it is "scope": "machine"'
+        );
+        const inspectedFile = vscode.workspace.getConfiguration('utplsql').inspect<string>('perf.reportFile');
+        assert.equal(
+            inspectedFile?.workspaceValue,
+            undefined,
+            'utplsql.perf.reportFile must not accept a workspace-level value now that it is "scope": "machine"'
+        );
+
+        await resolve(ctx.controller, schema);
+
+        assert.ok(!fs.existsSync(outsidePath), `utplsql.perf.reportFile pointed outside the workspace at '${outsidePath}' and it was still created`);
+    } finally {
+        if (previousSettings === undefined) {
+            fs.rmSync(settingsPath, { force: true });
+        } else {
+            fs.writeFileSync(settingsPath, previousSettings);
+        }
+        fs.rmSync(outsidePath, { force: true });
+    }
+}
+
+/**
  * End-to-end regression suite run against a real Oracle+utPLSQL instance and
  * a real VS Code extension host (not a mock `vscode` module) via
  * @vscode/test-electron — see test/e2e/runTests.ts for how this file is
  * launched. Covers the tree-materialization/run-resolution fixes, a
- * tag-scoped run against a real reporter, and cancellation; see
- * docs/performance.md's Findings/Open follow-ups.
+ * tag-scoped run against a real reporter, cancellation, and that a
+ * workspace can no longer turn on/redirect perf instrumentation via its own
+ * .vscode/settings.json; see docs/performance.md's Findings/Open
+ * follow-ups.
  */
 export async function run(): Promise<void> {
     const pool = await getTestPool();
@@ -229,7 +297,8 @@ export async function run(): Promise<void> {
         const cases: Array<[string, () => Promise<void>]> = [
             ['a tag-scoped run resolves an unexpanded package', () => testTagScopedRunResolvesAnUnexpandedPackage(ctx, pkg!)],
             ['running a package attaches results to every test and survives re-resolution', () => testPackageAttachesResultsAndSurvivesReResolution(ctx, pkg!)],
-            ['cancelling a run leaves the pool/tree usable for the next one', () => testCancellationLeavesStateUsable(ctx, pkg!)]
+            ['cancelling a run leaves the pool/tree usable for the next one', () => testCancellationLeavesStateUsable(ctx, pkg!)],
+            ['a workspace-supplied utplsql.perf.* setting is ignored (scope: machine)', () => testWorkspacePerfSettingsAreIgnored(ctx, schema!)]
         ];
 
         const failures: string[] = [];

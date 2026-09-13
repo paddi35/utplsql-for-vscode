@@ -1,9 +1,8 @@
 # utPLSQL for VS Code
 
-Run and debug [utPLSQL](https://github.com/utPLSQL/utPLSQL) unit tests directly from Visual
-Studio Code's native Testing API — Test Explorer, gutter run icons, inline failure locations,
-code coverage and reporter export, without needing SQL Developer, PL/SQL Developer or the
-`utPLSQL-cli`.
+Run [utPLSQL](https://github.com/utPLSQL/utPLSQL) unit tests directly from Visual Studio Code's
+native Testing API — Test Explorer, gutter run icons, inline failure locations, code coverage
+and reporter export, without needing SQL Developer, PL/SQL Developer or the `utPLSQL-cli`.
 
 > [!IMPORTANT]
 > **This is not an official utPLSQL project.** It is an independent, community-built extension
@@ -89,6 +88,9 @@ entries to `files.associations` yourself for any extensions it doesn't already c
 | `utplsql.coverage.reporter` | `"sonar"` | The native Coverage view always uses `ut_coverage_sonar_reporter`; set to `"cobertura"` to additionally run `ut_coverage_cobertura_reporter` and get offered a save dialog for it after each coverage run. |
 | `utplsql.reporter.clientCharacterSet` / `utplsql.reporter.colorConsole` | `""` / `false` | `a_client_character_set`/`a_color_console` for `utplsql.runWithReporter` and the **Export with Reporter** run profile. |
 | `utplsql.generate.*` | see `package.json` | Test generation options: package/unit prefix/suffix, tests-per-unit, comments, disabled-by-default, suite path, indent. Mirrors utPLSQL's SQL Developer test generator settings. |
+| `utplsql.trace` | `false` | Detailed per-event logging (suite/test start and end, one line per received real-time reporter event) to the `utPLSQL` output channel. Useful for troubleshooting; noticeably slower on large test runs (see `utplsql.perf.enabled`), so leave it off otherwise. |
+| `utplsql.perf.enabled` | `false` | Timing instrumentation for discovery/run steps (tree build, event throughput) to the `utPLSQL` output channel. See `docs/performance.md`. |
+| `utplsql.perf.reportFile` | `""` | When set and `utplsql.perf.enabled` is on, also appends each timing measurement as a JSON line to this file. |
 
 ## Known limitations
 
