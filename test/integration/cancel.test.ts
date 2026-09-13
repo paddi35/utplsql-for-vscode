@@ -3,7 +3,7 @@ import { Connection } from 'oracledb';
 import { buildProduceSql, cancelConsumer, newReporterId, openConsumer, streamRows } from '../../src/db/realtimeDao';
 import { parseEvent } from '../../src/model/eventParser';
 import { CancellationSignal, runWithReporter } from '../../src/db/reporterDao';
-import { getTestPool, recycleTestPool, closeTestPool, TEST_OWNER } from './support/db';
+import { getTestPool, recycleTestPool, closeTestPool, canReadSessionView, TEST_OWNER } from './support/db';
 import { installFixture } from './support/fixture';
 import { installPerfFixtureObjects, generatePerfFixture, dropPerfFixture, setSleepScale } from '../perf/support/perfFixture';
 
@@ -124,20 +124,38 @@ function fakeToken(): { signal: CancellationSignal; cancel: () => void } {
     };
 }
 
-async function currentSid(conn: Connection): Promise<number> {
-    const result = await conn.execute<{ SID: number }>(`SELECT TO_NUMBER(SYS_CONTEXT('USERENV', 'SID')) AS SID FROM dual`);
-    return Number(result.rows?.[0]?.SID);
+/**
+ * A session is identified by sid *and* serial#, never by sid alone:
+ * Oracle hands a freed sid straight to the next session that logs on, so
+ * a sid-only check reports a long-gone session as "still there" as soon
+ * as anything else -- the checking connection included -- lands in the
+ * same slot.
+ */
+interface SessionId {
+    sid: number;
+    serial: number;
+}
+
+async function currentSession(conn: Connection): Promise<SessionId> {
+    const result = await conn.execute<{ SID: number; SERIAL: number }>(
+        `SELECT sid AS SID, serial# AS SERIAL FROM v$session WHERE sid = SYS_CONTEXT('USERENV', 'SID')`
+    );
+    const row = result.rows?.[0];
+    assert.ok(row, "expected v$session to report the calling connection's own session");
+    return { sid: Number(row!.SID), serial: Number(row!.SERIAL) };
 }
 
 /** Polls v$session rather than checking once: PMON's cleanup of a dropped session is not guaranteed instantaneous. */
-async function sidsStillPresent(conn: Connection, sids: number[], timeoutMs = 10000): Promise<number[]> {
+async function sessionsStillPresent(conn: Connection, sessions: SessionId[], timeoutMs = 10000): Promise<SessionId[]> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-        const result = await conn.execute<{ SID: number }>(
-            `SELECT sid AS SID FROM v$session WHERE sid IN (${sids.map((_, i) => `:s${i}`).join(', ')})`,
-            Object.fromEntries(sids.map((s, i) => [`s${i}`, s]))
+        const result = await conn.execute<{ SID: number; SERIAL: number }>(
+            `SELECT sid AS SID, serial# AS SERIAL FROM v$session WHERE (sid, serial#) IN (${sessions
+                .map((_, i) => `(:s${i}, :n${i})`)
+                .join(', ')})`,
+            Object.fromEntries(sessions.flatMap((s, i) => [[`s${i}`, s.sid] as const, [`n${i}`, s.serial] as const]))
         );
-        const remaining = (result.rows ?? []).map((r) => r.SID);
+        const remaining = (result.rows ?? []).map((r) => ({ sid: Number(r.SID), serial: Number(r.SERIAL) }));
         if (remaining.length === 0 || Date.now() > deadline) {
             return remaining;
         }
@@ -165,21 +183,34 @@ async function sidsStillPresent(conn: Connection, sids: number[], timeoutMs = 10
  */
 describe('cancelling a reporter export does not leak or poison the connection pool [integration]', function () {
     this.timeout(180000);
-    let setupConn: Connection;
-
     before(async () => {
-        const pool = await getTestPool();
-        setupConn = await pool.getConnection();
-        await installPerfFixtureObjects(setupConn);
-        await generatePerfFixture(setupConn, { packages: 3, seed: 42 });
-        await setSleepScale(setupConn, 1); // full 2-10s "slow" tier, see perfFixture.sql
+        const setupConn = await (await getTestPool()).getConnection();
+        try {
+            await installPerfFixtureObjects(setupConn);
+            await generatePerfFixture(setupConn, { packages: 3, seed: 42 });
+            await setSleepScale(setupConn, 1); // full 2-10s "slow" tier, see perfFixture.sql
+        } finally {
+            await setupConn.close();
+        }
     });
 
+    /**
+     * Deliberately takes a *fresh* connection rather than reusing one held
+     * since before(): both tests here cancel an export and then call
+     * recycleTestPool(), whose pool.close(0) force-closes every one of that
+     * pool's connections -- including any the suite was still holding. A
+     * teardown built on such a connection fails with NJS-500 ("connection
+     * to Oracle Database was closed or broken") no matter what it does.
+     */
     after(async () => {
-        await dropPerfFixture(setupConn);
-        await setSleepScale(setupConn, 0);
-        await setupConn.close();
-        await closeTestPool();
+        const teardownConn = await (await getTestPool()).getConnection();
+        try {
+            await dropPerfFixture(teardownConn);
+            await setSleepScale(teardownConn, 0);
+        } finally {
+            await teardownConn.close();
+            await closeTestPool();
+        }
     });
 
     it('cancelling ~1s into an export returns well under the 3600s consumer timeout, and a following export on the same profile still succeeds', async () => {
@@ -220,13 +251,19 @@ describe('cancelling a reporter export does not leak or poison the connection po
         }
     });
 
-    it('leaves no session behind in v$session for either connection after a cancelled export', async () => {
+    it('leaves no session behind in v$session for either connection after a cancelled export', async function () {
         const pool = await getTestPool();
         const { signal, cancel } = fakeToken();
         const producerConn = await pool.getConnection();
         const consumerConn = await pool.getConnection();
-        const producerSid = await currentSid(producerConn);
-        const consumerSid = await currentSid(consumerConn);
+        if (!(await canReadSessionView(producerConn))) {
+            // No v$session grant here -- see canReadSessionView().
+            await producerConn.close();
+            await consumerConn.close();
+            this.skip();
+        }
+        const producerSession = await currentSession(producerConn);
+        const consumerSession = await currentSession(consumerConn);
 
         setTimeout(() => cancel(), 1000);
         await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [TEST_OWNER], {}, signal);
@@ -240,7 +277,7 @@ describe('cancelling a reporter export does not leak or poison the connection po
 
         const checkConn = await (await getTestPool()).getConnection();
         try {
-            const remaining = await sidsStillPresent(checkConn, [producerSid, consumerSid]);
+            const remaining = await sessionsStillPresent(checkConn, [producerSession, consumerSession]);
             assert.deepEqual(remaining, [], `expected neither session to remain in v$session, still found: ${JSON.stringify(remaining)}`);
         } finally {
             await checkConn.close();

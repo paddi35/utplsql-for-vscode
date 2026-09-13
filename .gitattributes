@@ -1,0 +1,11 @@
+# Shell scripts must keep LF endings no matter what platform they are checked
+# out on. Git for Windows installs with core.autocrlf=true by default, which
+# would otherwise hand docker/oracle-utplsql/init-scripts/*.sh to the Oracle
+# container with CRLF line endings -- bash then fails on the carriage return
+# ("/bin/bash^M: bad interpreter"), and the database comes up without utPLSQL
+# installed and without the v$session grant the integration suite needs.
+#
+# Scoped to *.sh on purpose rather than a repo-wide `* text=auto`: the rest of
+# the tree is checked out with platform-native endings today, and
+# renormalising it would touch every file for no benefit.
+*.sh text eol=lf
