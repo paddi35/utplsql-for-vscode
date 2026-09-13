@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { Connection } from 'oracledb';
 import { getProfile } from '../db/connections';
-import { getPool, recyclePool } from '../db/pool';
+import { getPool, recyclePool, describeConnectionError } from '../db/pool';
 import * as dao from '../db/utplsqlDao';
 import { getCachedVersion } from '../db/versionCache';
 import {
@@ -261,7 +261,7 @@ async function runOneProfile(
         }
     }
 
-    const pool = await getPool(cfg, ctx.secrets, options.coverage ? 1 : 0);
+    const pool = await getPool(cfg, ctx.secrets);
 
     // Connection acquisition and the version round-trip below run before the
     // main try/finally (which needs consumerConn to already exist to set up
@@ -275,7 +275,7 @@ async function runOneProfile(
     try {
         producerConn = await pool.getConnection();
     } catch (err) {
-        items.forEach((i) => run.errored(i, new vscode.TestMessage(String(err))));
+        items.forEach((i) => run.errored(i, new vscode.TestMessage(describeConnectionError(err, profile))));
         return {};
     }
 
@@ -299,7 +299,7 @@ async function runOneProfile(
     try {
         consumerConn = await pool.getConnection();
     } catch (err) {
-        items.forEach((i) => run.errored(i, new vscode.TestMessage(String(err))));
+        items.forEach((i) => run.errored(i, new vscode.TestMessage(describeConnectionError(err, profile))));
         await safeClose(producerConn);
         return {};
     }

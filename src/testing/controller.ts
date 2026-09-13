@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { getConnection, recyclePool } from '../db/pool';
+import { getConnection, recyclePool, setPoolOutputChannel } from '../db/pool';
 import { getProfile, readProfiles } from '../db/connections';
 import * as dao from '../db/utplsqlDao';
 import { SuiteInfoRow } from '../db/utplsqlDao';
@@ -337,6 +337,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
     const meta = new MetaStore();
     const output = vscode.window.createOutputChannel('utPLSQL');
     setPerfOutputChannel(output);
+    setPoolOutputChannel(output);
     const ctx: UtplsqlContext = { controller, meta, output, secrets: extCtx.secrets, sourceIndex };
 
     const reportResolveError = (item: vscode.TestItem, err: unknown): void => {
@@ -375,48 +376,57 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
                 return;
             }
             try {
+                const owners = new Set<string>();
+                const primary = (cfg.defaultSchema ?? cfg.user).toUpperCase();
+                // conn is only needed for the version round-trip and
+                // hasSuites() below — closed before fetchSuiteRows() runs
+                // rather than held open across it, since fetchSuiteRows opens
+                // a *second* connection of its own. Holding both at once used
+                // to mean a single root resolve checked out 2 connections
+                // simultaneously, saturating a poolMax: 2 pool by itself
+                // (issue #16) — any concurrent checkout (a sibling tree
+                // expand, a run) then queued behind this one root resolve
+                // alone.
                 const conn = await getConnection(cfg, extCtx.secrets);
                 try {
                     const version = await getCachedVersion(conn, parsed.profile);
                     item.description = version.raw;
-                    const owners = new Set<string>();
-                    const primary = (cfg.defaultSchema ?? cfg.user).toUpperCase();
                     if (await dao.hasSuites(conn, primary)) {
                         owners.add(primary);
                     }
-                    const rows = await fetchSuiteRows(parsed.profile, (raw) => logUnknownItemType(parsed.profile, raw));
-                    rows.forEach((r) => owners.add(r.objectOwner.toUpperCase()));
-                    if (owners.size === 0) {
-                        reportResolveError(
-                            item,
-                            new Error(
-                                `No utPLSQL suites found for '${parsed.profile}'. Is utPLSQL installed in schema '${primary}' and are any %suite packages compiled there?`
-                            )
-                        );
-                        return;
-                    }
-                    const expectedIds = new Set<string>();
-                    for (const owner of [...owners].sort()) {
-                        const id = schemaId(parsed.profile, owner);
-                        expectedIds.add(id);
-                        // Reuse an existing schema item rather than replacing it:
-                        // it may already carry a fully-resolved subtree with live
-                        // run state (see materializeLevel's merge for why a blind
-                        // rebuild here would orphan that).
-                        const schemaItem = item.children.get(id) ?? controller.createTestItem(id, owner);
-                        schemaItem.canResolveChildren = true;
-                        item.children.add(schemaItem);
-                    }
-                    const stale: string[] = [];
-                    item.children.forEach((child) => {
-                        if (!expectedIds.has(child.id)) {
-                            stale.push(child.id);
-                        }
-                    });
-                    stale.forEach((id) => item.children.delete(id));
                 } finally {
                     await conn.close();
                 }
+                const rows = await fetchSuiteRows(parsed.profile, (raw) => logUnknownItemType(parsed.profile, raw));
+                rows.forEach((r) => owners.add(r.objectOwner.toUpperCase()));
+                if (owners.size === 0) {
+                    reportResolveError(
+                        item,
+                        new Error(
+                            `No utPLSQL suites found for '${parsed.profile}'. Is utPLSQL installed in schema '${primary}' and are any %suite packages compiled there?`
+                        )
+                    );
+                    return;
+                }
+                const expectedIds = new Set<string>();
+                for (const owner of [...owners].sort()) {
+                    const id = schemaId(parsed.profile, owner);
+                    expectedIds.add(id);
+                    // Reuse an existing schema item rather than replacing it:
+                    // it may already carry a fully-resolved subtree with live
+                    // run state (see materializeLevel's merge for why a blind
+                    // rebuild here would orphan that).
+                    const schemaItem = item.children.get(id) ?? controller.createTestItem(id, owner);
+                    schemaItem.canResolveChildren = true;
+                    item.children.add(schemaItem);
+                }
+                const stale: string[] = [];
+                item.children.forEach((child) => {
+                    if (!expectedIds.has(child.id)) {
+                        stale.push(child.id);
+                    }
+                });
+                stale.forEach((id) => item.children.delete(id));
             } catch (err) {
                 reportResolveError(item, err);
             }
