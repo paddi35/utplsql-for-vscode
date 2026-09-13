@@ -61,6 +61,22 @@ export interface ObjectTypeCache {
     clear(profile?: string, owner?: string): void;
 }
 
+/**
+ * The instance every caller must use.
+ *
+ * The cache is only correct while exactly one exists per extension host:
+ * controller.ts wires clear() into refreshHandler and into a profile being
+ * changed or removed, and a second instance would never be reached by
+ * either. It would then keep answering PACKAGE for an object that has since
+ * been recompiled as PACKAGE BODY (or dropped), for the rest of the
+ * session, with no way for the user to flush it short of reloading the
+ * window.
+ *
+ * createObjectTypeCache() stays exported for tests, which want a fresh,
+ * isolated cache per case.
+ */
+export const sharedObjectTypeCache: ObjectTypeCache = createObjectTypeCache();
+
 export function createObjectTypeCache(): ObjectTypeCache {
     const perOwner = new Map<string, Map<string, ObjectType | undefined>>();
     const priming = new Map<string, Promise<void>>();

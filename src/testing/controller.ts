@@ -13,7 +13,7 @@ import { measure, setPerfOutputChannel } from '../perf';
 import { runReporterExport } from './reporterProfile';
 import { getCachedVersion, clearVersionCache } from '../db/versionCache';
 import { createSingleFlightCache } from './singleFlight';
-import { createObjectTypeCache } from './objectTypeCache';
+import { sharedObjectTypeCache } from './objectTypeCache';
 import { forgetProfile as forgetProfileCaches } from './profileCaches';
 import { reconcileRoots } from './rootReconciliation';
 
@@ -27,8 +27,15 @@ import { reconcileRoots } from './rootReconciliation';
  */
 const suiteRowsCache = createSingleFlightCache<SuiteInfoRow[]>();
 
-/** Per (profile, owner) PACKAGE/PACKAGE BODY object-type cache backing resolveVirtualTypes below — see objectTypeCache.ts (issue #22). */
-const objectTypeCache = createObjectTypeCache();
+/**
+ * Per (profile, owner) PACKAGE/PACKAGE BODY object-type cache backing
+ * resolveVirtualTypes below — see objectTypeCache.ts (issue #22). Shared
+ * with coverage.ts's resolveFileMappings, which asks the same question
+ * about the same objects: this module owns the clearing (refreshHandler,
+ * and a profile being changed or removed), so a second instance anywhere
+ * would go stale and never be flushed.
+ */
+const objectTypeCache = sharedObjectTypeCache;
 
 /**
  * Per (profile, owner), which SuiteInfoRow[] are the direct children of

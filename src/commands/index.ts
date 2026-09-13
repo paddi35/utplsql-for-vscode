@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { addProfile, ConnectionProfile, getProfile, readProfiles, removeProfile, setPassword, validateProfileName } from '../db/connections';
-import { getPool, recyclePool, validateSchemaName } from '../db/pool';
+import { getPool, recyclePool, validateSchemaName, describeConnectionError } from '../db/pool';
 import { forgetProfile, getSuiteRows } from '../testing/controller';
 import * as dao from '../db/utplsqlDao';
 import { runWithReporter as runWithReporterDao } from '../db/reporterDao';
@@ -12,7 +12,7 @@ import { generateTestPackage, readGenerateOptions } from '../generate/testTempla
 import { matchesConfiguredLanguage } from '../workspace/languageIndex';
 import { listTnsAliases, resolveTnsAdminDir } from '../db/tnsnames';
 import { parseVirtualSourceUri } from '../workspace/virtualSource';
-import { Candidate, chooseTarget, editorTargetFromVirtualSource } from './resolveTarget';
+import { Candidate, chooseTarget, editorTargetFromVirtualSource, targetFromDiscoveryRow } from './resolveTarget';
 
 const ENTER_MANUALLY = '$(edit) Enter Easy-Connect string manually…';
 
@@ -280,6 +280,25 @@ async function suiteRowCandidates(ctx: UtplsqlContext, profile: string): Promise
  *    coverage fallback), which used to make these three commands dead
  *    entries in the palette (issue #29).
  */
+/**
+ * The target for a command invoked from the Test Explorer context menu.
+ *
+ * VS Code hands the clicked TestItem to the command, and its MetaStore entry
+ * already carries the profile and the discovery row -- everything
+ * resolveAtCursor would otherwise re-derive from a cursor or ask for in a
+ * QuickPick. Returns undefined for an item that stands for no single object
+ * (a profile root, a --%suitepath grouping node), so the caller falls back
+ * to prompting rather than acting on a guess.
+ */
+function resolveFromTestItem(ctx: UtplsqlContext, item: vscode.TestItem | undefined): ResolvedCursorObject | undefined {
+    const meta = item ? ctx.meta.get(item.id) : undefined;
+    if (!meta?.row) {
+        return undefined;
+    }
+    const target = targetFromDiscoveryRow(meta.row);
+    return target ? { profile: meta.profile, ...target } : undefined;
+}
+
 async function resolveAtCursor(
     ctx: UtplsqlContext,
     quickPickTitle: string,
@@ -354,10 +373,38 @@ function findKnownItem(ctx: UtplsqlContext, resolved: ResolvedCursorObject): vsc
     return found;
 }
 
+/**
+ * Wraps a command handler so anything it throws is reported as a utPLSQL
+ * error notification rather than the generic "Running the contributed
+ * command failed" VS Code shows for an unhandled rejection.
+ *
+ * Every command below opens a pooled connection at some point, and until
+ * now none of those calls had a catch anywhere above them. The generic
+ * message is the worst possible one for exactly the failures that are most
+ * likely here and most fixable by the user: ORA-01017 after a password
+ * change, ORA-12154 for a TNS alias that no longer resolves, NJS-040 when
+ * every pooled connection is busy. describeConnectionError turns the last
+ * of those into an explanation instead of an error code.
+ *
+ * The profile name is not known here -- it is chosen inside the handler --
+ * so the message names the command instead, and describeConnectionError's
+ * own text carries the rest.
+ */
+function guarded<T extends unknown[]>(title: string, handler: (...args: T) => Promise<void>): (...args: T) => Promise<void> {
+    return async (...args: T) => {
+        try {
+            await handler(...args);
+        } catch (err) {
+            const detail = describeConnectionError(err, title);
+            vscode.window.showErrorMessage(detail.startsWith('utPLSQL:') ? detail : `utPLSQL: ${title} failed — ${detail}`);
+        }
+    };
+}
+
 export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: UtplsqlContext): void {
     extCtx.subscriptions.push(
-        vscode.commands.registerCommand('utplsql.runTestAtCursor', async () => {
-            const resolved = await resolveAtCursor(ctx, 'Select a test to run', (profile) => suiteRowCandidates(ctx, profile));
+        vscode.commands.registerCommand('utplsql.runTestAtCursor', guarded('Run Test at Cursor', async (clickedItem?: vscode.TestItem) => {
+            const resolved = resolveFromTestItem(ctx, clickedItem) ?? (await resolveAtCursor(ctx, 'Select a test to run', (profile) => suiteRowCandidates(ctx, profile)));
             if (!resolved) {
                 return;
             }
@@ -375,9 +422,9 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             } finally {
                 tokenSource.dispose();
             }
-        }),
+        })),
 
-        vscode.commands.registerCommand('utplsql.runWithTags', async () => {
+        vscode.commands.registerCommand('utplsql.runWithTags', guarded('Run Tests with Tag', async () => {
             const profile = await pickProfile('Select connection profile');
             if (!profile) {
                 return;
@@ -449,9 +496,9 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             } finally {
                 tokenSource.dispose();
             }
-        }),
+        })),
 
-        vscode.commands.registerCommand('utplsql.rebuildAnnotations', async () => {
+        vscode.commands.registerCommand('utplsql.rebuildAnnotations', guarded('Rebuild Annotation Cache', async () => {
             const profile = await pickProfile('Select connection profile');
             if (!profile) {
                 return;
@@ -492,10 +539,10 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             } finally {
                 tokenSource.dispose();
             }
-        }),
+        })),
 
-        vscode.commands.registerCommand('utplsql.runWithReporter', async () => {
-            const resolved = await resolveAtCursor(ctx, 'Select an object to export', (profile) => suiteRowCandidates(ctx, profile));
+        vscode.commands.registerCommand('utplsql.runWithReporter', guarded('Run with Reporter (Export)', async (clickedItem?: vscode.TestItem) => {
+            const resolved = resolveFromTestItem(ctx, clickedItem) ?? (await resolveAtCursor(ctx, 'Select an object to export', (profile) => suiteRowCandidates(ctx, profile)));
             if (!resolved) {
                 return;
             }
@@ -579,10 +626,10 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
                 ctx.output.appendLine(output);
                 ctx.output.show(true);
             }
-        }),
+        })),
 
-        vscode.commands.registerCommand('utplsql.generateTest', async () => {
-            const resolved = await resolveAtCursor(ctx, 'Select an object to generate a test for', (_profile, cfg) => testableCandidates(ctx, cfg));
+        vscode.commands.registerCommand('utplsql.generateTest', guarded('Generate Test Package', async (clickedItem?: vscode.TestItem) => {
+            const resolved = resolveFromTestItem(ctx, clickedItem) ?? (await resolveAtCursor(ctx, 'Select an object to generate a test for', (_profile, cfg) => testableCandidates(ctx, cfg)));
             if (!resolved) {
                 return;
             }
@@ -607,7 +654,7 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             const skeleton = generateTestPackage(matching[0], procNames, readGenerateOptions());
             const doc = await vscode.workspace.openTextDocument({ language: editorLanguageId(), content: skeleton });
             await vscode.window.showTextDocument(doc);
-        })
+        }))
     );
 }
 

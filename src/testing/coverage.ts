@@ -13,6 +13,7 @@ import { virtualSourceUri } from '../workspace/virtualSource';
 import { groupRequest, runOneProfile, readRandomOrderConfig } from './runHandler';
 import { withContentSecurityPolicy } from './coverageHtml';
 import { computeCoverageScope, CoverageScopeItem } from './coverageScope';
+import { sharedObjectTypeCache } from './objectTypeCache';
 import { measure } from '../perf';
 
 const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
@@ -171,9 +172,17 @@ async function resolveFileMappings(
     // the sole source of truth) — fall back to a virtual, DB-backed document
     // instead of dropping them from coverage entirely, so native gutters/the
     // Test Coverage panel still get something to point at.
+    // Through the same cache controller.ts fills while materializing the
+    // tree (issue #22), not a direct dao call: a coverage run asks about
+    // objects the Test Explorer has usually just resolved, so this is
+    // normally answered without a round trip at all. Sharing the instance
+    // is what makes that safe -- refreshHandler and a profile change clear
+    // it, which a cache private to this module would never see.
     const dbTypeByKey = new Map<string, 'PACKAGE BODY' | 'PACKAGE'>();
     for (const [owner, names] of needsLookup) {
-        const types = await dao.getPackageObjectTypes(scopeConn, owner, [...names], profile);
+        const types = await sharedObjectTypeCache.resolve(profile, owner, [...names], (toFetch) =>
+            dao.getPackageObjectTypes(scopeConn, owner, toFetch, profile)
+        );
         types.forEach((type, objectName) => dbTypeByKey.set(`${owner}.${objectName}`, type));
     }
 

@@ -44,13 +44,23 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
             if (!cfg) {
                 continue;
             }
-            const pool = await getPool(cfg, ctx.secrets);
-            const probeConn = await pool.getConnection();
+            // Per profile, not around the whole loop: the "none could be
+            // reached" branch below only means anything if one profile
+            // failing leaves the others still probed. Unguarded, the first
+            // wrong stored password or saturated pool threw straight out of
+            // the command and VS Code reported it as a generic "command
+            // failed", with neither the cause nor the profile named.
             try {
-                const reporters = await dao.getReportersList(probeConn);
-                reporterSets.push(new Set(reporters.map((r) => r.reporterObjectName)));
-            } finally {
-                await probeConn.close();
+                const pool = await getPool(cfg, ctx.secrets);
+                const probeConn = await pool.getConnection();
+                try {
+                    const reporters = await dao.getReportersList(probeConn);
+                    reporterSets.push(new Set(reporters.map((r) => r.reporterObjectName)));
+                } finally {
+                    await probeConn.close();
+                }
+            } catch (err) {
+                ctx.output.appendLine(`utPLSQL: could not list reporters for '${profile}' — ${describeConnectionError(err, profile)}`);
             }
         }
         if (reporterSets.length === 0) {
