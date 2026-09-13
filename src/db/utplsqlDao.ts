@@ -38,7 +38,8 @@ export interface SuiteInfoRow {
     objectName: string;
     itemName: string;
     itemDescription?: string;
-    itemType: 'UT_SUITE' | 'UT_SUITE_CONTEXT' | 'UT_TEST';
+    /** UT_LOGICAL_SUITE is a --%suitepath(...) grouping node, not a real suite/context/test — see parseItemType's doc comment. */
+    itemType: 'UT_SUITE' | 'UT_SUITE_CONTEXT' | 'UT_TEST' | 'UT_LOGICAL_SUITE';
     itemLineNo?: number;
     path: string;
     disabledFlag: boolean;
@@ -194,25 +195,74 @@ export function collectTags(rows: Array<Pick<SuiteInfoRow, 'tags'>>): string[] {
     return [...tags].sort();
 }
 
-export async function getSuitesInfo(conn: Connection, owner?: string, pkg?: string): Promise<SuiteInfoRow[]> {
+const KNOWN_ITEM_TYPES: ReadonlySet<string> = new Set(['UT_SUITE', 'UT_SUITE_CONTEXT', 'UT_TEST', 'UT_LOGICAL_SUITE']);
+
+/**
+ * Narrows a raw item_type value from ut_runner.get_suites_info to the
+ * declared SuiteInfoRow union, or undefined for anything getSuitesInfo has
+ * never seen it return. Replaces a blind `as SuiteInfoRow['itemType']` cast
+ * that silently accepted whatever the database sent back — which is exactly
+ * how UT_LOGICAL_SUITE (the --%suitepath grouping node's item_type, ~40% of
+ * the perf fixture's packages per docs/performance.md's "Findings") went
+ * undeclared for as long as it did: the cast asserted the union was
+ * complete instead of ever letting the compiler, or a log line, catch that
+ * it wasn't. getSuitesInfo treats an undefined result as a suite — the same
+ * treatment every non-UT_TEST value already gets via isTestItem below — but
+ * only after reporting the raw value through its onUnknownItemType
+ * callback, so a fifth item_type a future utPLSQL version introduces is
+ * visible instead of silently absorbed again.
+ */
+export function parseItemType(value: unknown): SuiteInfoRow['itemType'] | undefined {
+    const s = String(value);
+    return KNOWN_ITEM_TYPES.has(s) ? (s as SuiteInfoRow['itemType']) : undefined;
+}
+
+/**
+ * Whether a SuiteInfoRow is a leaf test rather than a suite/context/
+ * --%suitepath grouping node — the one condition resolveLocation
+ * (controller.ts) branches on. A --%suitepath group has no object_name of
+ * its own to look up (get_suites_info reuses the group's path segment
+ * there, not a real package), so routing it through the same
+ * lookupPackage(row.objectName) call every other non-test row uses is
+ * deliberate: SourceIndex.lookup() returns undefined for a name that never
+ * matched a real package, which is exactly "no location for this row" —
+ * the correct outcome for a node that isn't backed by one object, not a
+ * false match.
+ */
+export function isTestItem(itemType: SuiteInfoRow['itemType']): boolean {
+    return itemType === 'UT_TEST';
+}
+
+export async function getSuitesInfo(
+    conn: Connection,
+    owner?: string,
+    pkg?: string,
+    onUnknownItemType?: (raw: unknown) => void
+): Promise<SuiteInfoRow[]> {
     const result = await conn.execute<Record<string, unknown>>(
         `SELECT object_owner, object_name, item_name, item_description, item_type,
                 item_line_no, path, disabled_flag, disabled_reason, tags
            FROM TABLE(ut_runner.get_suites_info(upper(:owner), upper(:pkg)))`,
         { owner: owner ?? null, pkg: pkg ?? null }
     );
-    return (result.rows ?? []).map((r) => ({
-        objectOwner: String(r.OBJECT_OWNER),
-        objectName: String(r.OBJECT_NAME),
-        itemName: String(r.ITEM_NAME),
-        itemDescription: r.ITEM_DESCRIPTION ? String(r.ITEM_DESCRIPTION) : undefined,
-        itemType: String(r.ITEM_TYPE) as SuiteInfoRow['itemType'],
-        itemLineNo: r.ITEM_LINE_NO !== null && r.ITEM_LINE_NO !== undefined ? Number(r.ITEM_LINE_NO) : undefined,
-        path: String(r.PATH),
-        disabledFlag: parseDisabledFlag(r.DISABLED_FLAG),
-        disabledReason: r.DISABLED_REASON ? String(r.DISABLED_REASON) : undefined,
-        tags: r.TAGS ? String(r.TAGS) : undefined
-    }));
+    return (result.rows ?? []).map((r) => {
+        const itemType = parseItemType(r.ITEM_TYPE);
+        if (itemType === undefined) {
+            onUnknownItemType?.(r.ITEM_TYPE);
+        }
+        return {
+            objectOwner: String(r.OBJECT_OWNER),
+            objectName: String(r.OBJECT_NAME),
+            itemName: String(r.ITEM_NAME),
+            itemDescription: r.ITEM_DESCRIPTION ? String(r.ITEM_DESCRIPTION) : undefined,
+            itemType: itemType ?? 'UT_SUITE',
+            itemLineNo: r.ITEM_LINE_NO !== null && r.ITEM_LINE_NO !== undefined ? Number(r.ITEM_LINE_NO) : undefined,
+            path: String(r.PATH),
+            disabledFlag: parseDisabledFlag(r.DISABLED_FLAG),
+            disabledReason: r.DISABLED_REASON ? String(r.DISABLED_REASON) : undefined,
+            tags: r.TAGS ? String(r.TAGS) : undefined
+        };
+    });
 }
 
 /** Objects reachable via {dba|all}_dependencies from the run's covered objects, for coverage scoping. `profile` selects the dba_/all_ probe cache entry (see getDbaView) — it does not otherwise affect the query. */

@@ -54,7 +54,7 @@ function childrenIndexFor(profile: string, owner: string, forOwner: SuiteInfoRow
     return index;
 }
 
-async function fetchSuiteRows(profile: string): Promise<SuiteInfoRow[]> {
+async function fetchSuiteRows(profile: string, onUnknownItemType: (raw: unknown) => void): Promise<SuiteInfoRow[]> {
     const cached = suitesCache.get(profile);
     if (cached) {
         return cached;
@@ -71,7 +71,7 @@ async function fetchSuiteRows(profile: string): Promise<SuiteInfoRow[]> {
                 `utPLSQL ${version.raw} is too old (needs >= 3.1.3 for get_suites_info). Extension stays inactive for '${profile}'.`
             );
         }
-        const rows = await measure('getSuitesInfo', () => dao.getSuitesInfo(conn), { profile });
+        const rows = await measure('getSuitesInfo', () => dao.getSuitesInfo(conn, undefined, undefined, onUnknownItemType), { profile });
         suitesCache.set(profile, rows);
         return rows;
     } finally {
@@ -91,10 +91,9 @@ function pointAt(uri: vscode.Uri, itemLineNo: number | undefined): { uri: vscode
 }
 
 function resolveLocation(sourceIndex: SourceIndex, row: SuiteInfoRow): { uri: vscode.Uri; range: vscode.Range } | undefined {
-    const location =
-        row.itemType === 'UT_TEST'
-            ? sourceIndex.lookupProcedure(row.objectName, row.itemName)
-            : sourceIndex.lookupPackage(row.objectName);
+    const location = dao.isTestItem(row.itemType)
+        ? sourceIndex.lookupProcedure(row.objectName, row.itemName)
+        : sourceIndex.lookupPackage(row.objectName);
     if (!location) {
         return undefined;
     }
@@ -258,6 +257,11 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
         item.children.replace([errorItem]);
     };
 
+    /** getSuitesInfo's onUnknownItemType callback (see parseItemType in utplsqlDao.ts) — one line per unrecognised item_type actually observed, instead of the silent cast it replaces. */
+    const logUnknownItemType = (profile: string, raw: unknown): void => {
+        output.appendLine(`utPLSQL: getSuitesInfo for '${profile}' returned an unrecognised item_type '${String(raw)}', treating it as a suite`);
+    };
+
     controller.resolveHandler = async (item) => {
         if (!item) {
             for (const profile of readProfiles()) {
@@ -284,7 +288,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
                     if (await dao.hasSuites(conn, primary)) {
                         owners.add(primary);
                     }
-                    const rows = await fetchSuiteRows(parsed.profile);
+                    const rows = await fetchSuiteRows(parsed.profile, (raw) => logUnknownItemType(parsed.profile, raw));
                     rows.forEach((r) => owners.add(r.objectOwner.toUpperCase()));
                     if (owners.size === 0) {
                         reportResolveError(
@@ -325,7 +329,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
         if (parsed.kind === 'schema' || parsed.kind === 'path') {
             try {
                 const owner = parsed.owner;
-                const rows = await fetchSuiteRows(parsed.profile);
+                const rows = await fetchSuiteRows(parsed.profile, (raw) => logUnknownItemType(parsed.profile, raw));
                 const forOwner = rows.filter((r) => r.objectOwner.toUpperCase() === owner.toUpperCase());
                 const index = childrenIndexFor(parsed.profile, owner, forOwner);
                 const levelKey = parsed.kind === 'schema' ? '' : parsed.suitepath;

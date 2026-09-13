@@ -89,3 +89,29 @@ CREATE OR REPLACE PACKAGE BODY test_calc_pkg IS
 
 END test_calc_pkg;
 /
+-- A separate --%suitepath-grouped package, for the itemType = UT_LOGICAL_SUITE
+-- regression (issue #27, see utplsqlDao.ts's parseItemType). Kept as its own
+-- package rather than added to test_calc_pkg above so nothing here changes
+-- that package's row count/paths, which other integration tests assert on
+-- exactly. As with --%suite, --%suitepath needs a blank line before the
+-- first --%test/--%context or the whole package is silently invisible to
+-- get_suites_info (see docs/performance.md's Findings) -- kept below.
+CREATE OR REPLACE PACKAGE test_suitepath_pkg IS
+
+  --%suite(suitepath grouping fixture)
+  --%suitepath(a.b.c)
+
+  --%test(exists only to give the a.b.c suitepath group a real leaf)
+  PROCEDURE test_in_group;
+
+END test_suitepath_pkg;
+/
+CREATE OR REPLACE PACKAGE BODY test_suitepath_pkg IS
+
+  PROCEDURE test_in_group IS
+  BEGIN
+    ut.expect(1).to_equal(1);
+  END test_in_group;
+
+END test_suitepath_pkg;
+/
