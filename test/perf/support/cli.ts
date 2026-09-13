@@ -5,7 +5,7 @@
  * (see perfFixture.sql's header comment), or tear it down, against
  * whatever local DB test/integration/support/db.ts already points at.
  *
- * Usage: ts-node test/perf/support/cli.ts <generate|scale|drop> [args...]
+ * Usage: tsx test/perf/support/cli.ts <generate|scale|drop> [args...]
  *   generate [packages] [testsMin] [testsMax] [seed]   (defaults: 1000 10 20 42)
  *   scale <0-1>                                        (0 = instant, 1 = full 2-10s tests)
  *   drop

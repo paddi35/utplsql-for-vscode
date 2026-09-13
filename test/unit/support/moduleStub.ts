@@ -6,7 +6,7 @@ import * as path from 'node:path';
  * files that do `import ... from request` resolve to `exportsValue`
  * instead. Needed for src/db/connections.ts (and anything importing it,
  * like src/db/pool.ts and src/testing/controller.ts): 'vscode' only exists
- * inside the real extension host, so plain mocha/ts-node cannot load those
+ * inside the real extension host, so plain mocha/tsx cannot load those
  * files at all otherwise — every other vscode-importing file in this
  * codebase is instead left untested at the unit level, with its pure logic
  * extracted into its own vscode-free module (see perf.test.ts,

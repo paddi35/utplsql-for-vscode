@@ -11,7 +11,7 @@ type ConnectionsModule = typeof import('../../src/db/connections');
  * a fake 'vscode' module is installed — see support/moduleStub.ts. The
  * require() happens here, inside a helper called from within each test
  * body, rather than as a top-level `import`: a top-level import would be
- * hoisted to a plain require() at module-load time by ts-node's commonjs
+ * hoisted to a plain require() at module-load time by tsx's commonjs
  * output, which runs before any test (or its stub) does.
  */
 function loadConnections(initialConnections: unknown[] = []): { connections: ConnectionsModule; store: Record<string, unknown>; uninstall(): void } {

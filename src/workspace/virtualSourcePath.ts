@@ -1,6 +1,6 @@
 /**
  * Pure path-string logic for utplsql-source:// URIs (see virtualSource.ts),
- * kept vscode-free so it can be unit tested directly with plain mocha/ts-node
+ * kept vscode-free so it can be unit tested directly with plain mocha/tsx
  * instead of the extension host — importing 'vscode' itself fails outside it.
  */
 export interface VirtualSourcePathParts {

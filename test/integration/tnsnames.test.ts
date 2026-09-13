@@ -37,7 +37,7 @@ async function writeTnsnamesDir(contents: string): Promise<string> {
  * re-exports them: tnsnames.ts also imports 'vscode' (for
  * resolveTnsAdminDirWithSource()'s own plumbing), which is not resolvable
  * outside the extension host, and this suite runs the same way the rest of
- * test/integration does — plain mocha/ts-node, no @vscode/test-electron.
+ * test/integration does — plain mocha/tsx, no @vscode/test-electron.
  */
 describe('tnsnames filesystem resolution [integration]', () => {
     it("reads back the single alias defined in a directory's tnsnames.ora", async () => {

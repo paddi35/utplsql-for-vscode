@@ -40,7 +40,7 @@ END;`;
  * Declared locally rather than `import { CancellationToken } from 'vscode'`
  * so this module stays loadable outside the extension host — the real
  * `vscode` module only exists there, and test/unit/reporterDao.test.ts runs
- * under plain ts-node/mocha (same reason realtimeDao.ts, this file's
+ * under plain tsx/mocha (same reason realtimeDao.ts, this file's
  * sibling, never imports vscode either). A real vscode.CancellationToken —
  * or a vscode.CancellationTokenSource's .token — satisfies this
  * structurally, so callers pass theirs straight through unmodified; unit

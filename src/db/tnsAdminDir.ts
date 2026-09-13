@@ -3,7 +3,7 @@ import oracledb from 'oracledb';
 /**
  * TNS_ADMIN directory selection (pickTnsAdminDir) and alias listing
  * (listTnsAliases), kept vscode-free so both are directly testable with
- * plain mocha/ts-node instead of the extension host — importing 'vscode'
+ * plain mocha/tsx instead of the extension host — importing 'vscode'
  * itself fails outside it, the same reason
  * src/workspace/virtualSourcePath.ts is split out of virtualSource.ts.
  * oracledb is a plain npm dependency, not vscode, so it does not break that

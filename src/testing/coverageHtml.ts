@@ -1,11 +1,11 @@
 /**
  * Pure HTML string handling for the coverage HTML report (see
  * showHtmlReport() in coverage.ts), kept vscode-free so it can be unit
- * tested directly with plain mocha/ts-node instead of the extension host —
+ * tested directly with plain mocha/tsx instead of the extension host —
  * same split as src/workspace/virtualSourcePath.ts and
  * src/db/reporterDao.ts's buildRunWithReporterSql, for the same reason:
  * coverage.ts imports 'vscode' at the top and therefore cannot be
- * `require()`d by plain mocha/ts-node at all.
+ * `require()`d by plain mocha/tsx at all.
  *
  * Issue #13: ut_coverage_html_reporter's output is a self-contained report
  * assembled by the *database* from database-derived text — schema names,

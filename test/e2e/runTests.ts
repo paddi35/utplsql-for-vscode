@@ -10,7 +10,7 @@ import { runTests, downloadAndUnzipVSCode } from '@vscode/test-electron';
  * container, and that test's poisoned, workspace-scoped tnsnames.ora
  * redefines the *same* alias pointing nowhere routable. Kept as a literal
  * in both files rather than a shared constant module — this file runs via
- * ts-node, the other is esbuild-bundled independently of it (see
+ * tsx, the other is esbuild-bundled independently of it (see
  * pretest:e2e) — a literal is simpler to keep in sync than a module neither
  * file otherwise needs.
  */
@@ -46,7 +46,7 @@ function writeLegitTnsAdminDir(): string {
  * instance — see docker-compose.yml / test/integration's own docs for how
  * to get one running locally, and .github/workflows/e2e.yml for CI. Needs
  * `npm run pretest:e2e` (esbuild-bundles the test file, since the extension
- * host loads it via its own require(), not ts-node) to have run first;
+ * host loads it via its own require(), not tsx) to have run first;
  * `npm run test:e2e` does this automatically via the matching pretest hook.
  */
 async function main(): Promise<void> {

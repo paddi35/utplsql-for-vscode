@@ -4,7 +4,7 @@ import { LoggableItem, formatCoverageScopeLine, formatProduceSqlLine, formatRunF
 /**
  * Stands in for runOneProfile()'s trace(ctx, text) gate (src/testing/runHandler.ts)
  * without importing that file at all -- it pulls in 'vscode' at the top, so
- * plain mocha/ts-node cannot load it outside the extension host. `enabled`
+ * plain mocha/tsx cannot load it outside the extension host. `enabled`
  * plays the role of the utplsql.trace setting; `sink` plays ctx.output.
  */
 function trace(enabled: boolean, sink: { appendLine: (text: string) => void }, text: string): void {

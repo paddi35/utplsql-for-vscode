@@ -30,7 +30,7 @@ describe('buildRunWithReporterSql', () => {
  * Minimal fake of vscode.CancellationToken/CancellationTokenSource — see
  * CancellationSignal's doc comment in reporterDao.ts for why runWithReporter
  * accepts this shape rather than importing the real `vscode` module, which
- * this suite (plain ts-node/mocha, no extension host) cannot load.
+ * this suite (plain tsx/mocha, no extension host) cannot load.
  */
 function fakeToken(initiallyCancelled = false): { signal: CancellationSignal; cancel: () => void } {
     let cancelled = initiallyCancelled;
