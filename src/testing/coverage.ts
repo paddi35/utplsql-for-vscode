@@ -12,6 +12,8 @@ import { UtplsqlContext } from './model';
 import { virtualSourceUri } from '../workspace/virtualSource';
 import { groupRequest, runOneProfile, readRandomOrderConfig } from './runHandler';
 import { withContentSecurityPolicy } from './coverageHtml';
+import { computeCoverageScope, CoverageScopeItem } from './coverageScope';
+import { measure } from '../perf';
 
 const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
 
@@ -210,77 +212,59 @@ async function buildCoverageOptions(ctx: UtplsqlContext, profile: string, items:
     const pool = await getPool(cfg, ctx.secrets, 1);
     const scopeConn = await pool.getConnection();
     try {
-        const owners = new Set<string>();
-        const testObjects = new Map<string, { owner: string; name: string }>();
-        const includeObjects = new Map<string, { owner: string; name: string }>();
-
-        for (const item of items) {
-            const meta = ctx.meta.get(item.id);
-            if (!meta?.row) {
-                continue;
-            }
-            owners.add(meta.owner);
-            testObjects.set(`${meta.owner}.${meta.row.objectName}`, { owner: meta.owner, name: meta.row.objectName });
-            const deps = await dao.includes(scopeConn, meta.owner, meta.row.objectName, profile);
-            deps.forEach((d) => includeObjects.set(`${d.owner}.${d.name}`, d));
-        }
-
-        // Dependency discovery can't tell the utPLSQL framework's own
-        // packages (e.g. UT, UT_EXPECTATION) apart from real code under
-        // test when the framework is installed into the same schema as the
-        // tests — every test necessarily calls ut.expect(...), so they
-        // always show up as a direct dependency. There is no reliable
-        // signal in *_dependencies to filter those out automatically, so
-        // this is a user-maintained denylist instead of a guessed one.
-        const userExcluded = new Set(coverageCfg.get<string[]>('excludeObjects', []).map((n) => n.toUpperCase()));
-        for (const [key, { name }] of includeObjects) {
-            if (userExcluded.has(name)) {
-                includeObjects.delete(key);
-            }
-        }
-
-        // utplsql.coverage.schemes/includeObjects: an explicit override
-        // replaces the automatically derived scope entirely — dynamically
-        // invoked objects (execute immediate, triggers) never show up in
-        // *_dependencies, so there is no way to include them other than
-        // naming them here.
-        const schemesOverride = coverageCfg.get<string[]>('schemes', []);
-        const includeObjectsOverride = coverageCfg.get<string[]>('includeObjects', []);
-        const schemes = schemesOverride.length > 0 ? schemesOverride.map((s) => s.toUpperCase()) : [...owners];
-        if (includeObjectsOverride.length > 0) {
-            includeObjects.clear();
-            for (const owner of schemes) {
-                for (const name of includeObjectsOverride) {
-                    includeObjects.set(`${owner}.${name.toUpperCase()}`, { owner, name: name.toUpperCase() });
+        return await measure(
+            'buildCoverageOptions',
+            async () => {
+                // groupRequest (runHandler.ts) selects every path-bearing
+                // descendant of the run request — suites, contexts *and*
+                // tests, not just leaves — so the same package's object name
+                // repeats here once per row. computeCoverageScope (issue
+                // #21) is what turns that back into one *_dependencies query
+                // per distinct owner instead of one per item; see its own
+                // doc comment (coverageScope.ts) for the full reasoning.
+                const scopeItems: CoverageScopeItem[] = [];
+                for (const item of items) {
+                    const meta = ctx.meta.get(item.id);
+                    if (!meta?.row) {
+                        continue;
+                    }
+                    scopeItems.push({ owner: meta.owner, objectName: meta.row.objectName });
                 }
-            }
-        }
 
-        const { fileMappings, pathToUri } = await resolveFileMappings(ctx, scopeConn, profile, includeObjects.values());
-        // The test packages themselves are reported via a_test_file_mappings
-        // instead of a_exclude_objects: utPLSQL distinguishes "this file is
-        // test code" from "this file was not measured at all", which
-        // SonarQube/Cobertura consumers treat differently.
-        const { fileMappings: testFileMappings } = await resolveFileMappings(ctx, scopeConn, profile, testObjects.values());
+                const scope = await computeCoverageScope(scopeItems, (owner, names) => dao.includes(scopeConn, owner, names, profile), {
+                    excludeObjects: coverageCfg.get<string[]>('excludeObjects', []),
+                    schemesOverride: coverageCfg.get<string[]>('schemes', []),
+                    includeObjectsOverride: coverageCfg.get<string[]>('includeObjects', [])
+                });
 
-        const additionalReporterSetting = coverageCfg.get<'sonar' | 'cobertura'>('reporter', 'sonar');
+                const { fileMappings, pathToUri } = await resolveFileMappings(ctx, scopeConn, profile, scope.includeObjects.values());
+                // The test packages themselves are reported via a_test_file_mappings
+                // instead of a_exclude_objects: utPLSQL distinguishes "this file is
+                // test code" from "this file was not measured at all", which
+                // SonarQube/Cobertura consumers treat differently.
+                const { fileMappings: testFileMappings } = await resolveFileMappings(ctx, scopeConn, profile, scope.testObjects.values());
 
-        return {
-            options: {
-                reporter: 'ut_coverage_sonar_reporter',
-                schemes,
-                includeObjects: [...includeObjects.values()].map((v) => v.name),
-                fileMappings,
-                testFileMappings,
-                htmlReport: coverageCfg.get<boolean>('htmlReport', false),
-                additionalReporter: additionalReporterSetting === 'cobertura' ? 'ut_coverage_cobertura_reporter' : undefined,
-                includeSchemaExpr: coverageCfg.get<string>('includeSchemaExpr', '') || undefined,
-                includeObjectExpr: coverageCfg.get<string>('includeObjectExpr', '') || undefined,
-                excludeSchemaExpr: coverageCfg.get<string>('excludeSchemaExpr', '') || undefined,
-                excludeObjectExpr: coverageCfg.get<string>('excludeObjectExpr', '') || undefined
+                const additionalReporterSetting = coverageCfg.get<'sonar' | 'cobertura'>('reporter', 'sonar');
+
+                return {
+                    options: {
+                        reporter: 'ut_coverage_sonar_reporter',
+                        schemes: scope.schemes,
+                        includeObjects: [...scope.includeObjects.values()].map((v) => v.name),
+                        fileMappings,
+                        testFileMappings,
+                        htmlReport: coverageCfg.get<boolean>('htmlReport', false),
+                        additionalReporter: additionalReporterSetting === 'cobertura' ? 'ut_coverage_cobertura_reporter' : undefined,
+                        includeSchemaExpr: coverageCfg.get<string>('includeSchemaExpr', '') || undefined,
+                        includeObjectExpr: coverageCfg.get<string>('includeObjectExpr', '') || undefined,
+                        excludeSchemaExpr: coverageCfg.get<string>('excludeSchemaExpr', '') || undefined,
+                        excludeObjectExpr: coverageCfg.get<string>('excludeObjectExpr', '') || undefined
+                    },
+                    pathToUri
+                };
             },
-            pathToUri
-        };
+            { items: items.length }
+        );
     } finally {
         await scopeConn.close();
     }

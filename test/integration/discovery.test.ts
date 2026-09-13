@@ -129,7 +129,7 @@ describe('utplsqlDao discovery against a real schema [integration]', function ()
         // far always timed out during Oracle's first-time DB creation.
         // The fixture only ever points test_calc_pkg -> calc_pkg, so the
         // reverse direction must stay free of it.
-        const deps = await dao.includes(conn, TEST_OWNER, 'CALC_PKG', 'integration');
+        const deps = await dao.includes(conn, TEST_OWNER, ['CALC_PKG'], 'integration');
         assert.ok(
             !deps.some((d) => d.name === FIXTURE_OWNER_OBJECT),
             `expected ${FIXTURE_OWNER_OBJECT} NOT among calc_pkg's dependencies, got ${JSON.stringify(deps)}`

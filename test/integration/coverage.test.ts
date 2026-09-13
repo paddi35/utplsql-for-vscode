@@ -52,7 +52,7 @@ describe('coverage reporting against a real schema [integration]', function () {
         // spec), so buildCoverageOptions() ended up scoping coverage to the
         // test package instead of CALC_PKG and producing an empty
         // a_source_file_mappings, i.e. no coverage was ever reported.
-        const deps = await includes(producerConn, TEST_OWNER, 'TEST_CALC_PKG', 'integration');
+        const deps = await includes(producerConn, TEST_OWNER, ['TEST_CALC_PKG'], 'integration');
         assert.ok(
             deps.some((d) => d.owner === TEST_OWNER && d.name === 'CALC_PKG'),
             `expected CALC_PKG among TEST_CALC_PKG's dependencies, got ${JSON.stringify(deps)}`
