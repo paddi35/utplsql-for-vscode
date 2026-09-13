@@ -106,4 +106,42 @@ describe('SourceIndex file-system behaviour (parseSource + SourceLocationIndex +
         assert.equal(location?.owner, bodyPath, 'the body must still win the preference once both reindexes have settled');
         assert.equal(location?.isBody, true);
     });
+
+    it('indexes a new file, tracks its procedure moving 50 lines down, then drops it once deleted', () => {
+        const filePath = writeFile('pkg.pkb', packageBody('pkg', ['proc1']));
+        const index = new SourceLocationIndex<string>();
+        indexFromDisk(index, filePath);
+        const before = index.lookup('PKG.PROC1');
+        assert.ok(before, 'expected the freshly written file to be indexed');
+
+        const padding = new Array(50).fill('  -- padding').join('\n');
+        fs.writeFileSync(filePath, `create or replace package body pkg is\n${padding}\n  procedure proc1;\nend pkg;\n/\n`, 'utf8');
+        indexFromDisk(index, filePath);
+        const afterMove = index.lookup('PKG.PROC1');
+        assert.ok(afterMove, 'expected the moved procedure to still be indexed');
+        assert.equal(afterMove!.start.line, before!.start.line + 50);
+
+        fs.unlinkSync(filePath);
+        index.removeOwner(filePath);
+        assert.equal(index.lookup('PKG.PROC1'), undefined);
+    });
+
+    it('a rename removes the old paths entries and leaves only the new paths entries', () => {
+        const oldPath = writeFile('old_name.pkb', packageBody('pkg', ['proc1']));
+        const index = new SourceLocationIndex<string>();
+        indexFromDisk(index, oldPath);
+        assert.equal(index.lookup('PKG.PROC1')?.owner, oldPath);
+
+        const newPath = path.join(dir, 'new_name.pkb');
+        fs.renameSync(oldPath, newPath);
+        // What SourceIndex would see as onDidDelete(oldPath) followed by
+        // onDidCreate(newPath) from the FileSystemWatcher — a rename is
+        // both at once (#26's Impact section).
+        index.removeOwner(oldPath);
+        indexFromDisk(index, newPath);
+
+        const location = index.lookup('PKG.PROC1');
+        assert.equal(location?.owner, newPath);
+        assert.notEqual(location?.owner, oldPath);
+    });
 });
