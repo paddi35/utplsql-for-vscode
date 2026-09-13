@@ -36,6 +36,13 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
 - `utplsql.trace` and `utplsql.perf.enabled`/`utplsql.perf.reportFile` add opt-in, verbose
   per-event logging and timing instrumentation for discovery/run, off by default (see
   `docs/performance.md`).
+- **Export with Reporter** (the run profile) and `utplsql.runWithReporter` (the cursor command) can
+  now be cancelled while the export itself is running, not just between connection profiles or not
+  at all; `utplsql.runWithReporter` also gets its own cancellable progress notification, reporting
+  coarse phases (opening consumer / running tests / collecting `<n>` lines). Previously a wedged
+  export could hold two pool connections for up to an hour with no stop button that did anything;
+  cancelling now closes both connections and recycles the pool so a following export on the same
+  profile still succeeds.
 
 ### Changed
 
@@ -69,6 +76,27 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
   and a failed expectation's location could all point at the wrong line — until that file was
   reopened or the window reloaded. Re-indexing is now debounced per document URI, so edits across
   several files inside the same window are each still re-indexed.
+- Discovery and coverage picked their `dba_`/`all_` data-dictionary view prefix from a single cache
+  shared by every connection profile: whichever profile probed it first decided the answer for every
+  other profile for the rest of the session. A second, less-privileged profile inheriting a cached
+  `dba_` answer failed with `ORA-00942`; a second, more-privileged profile inheriting a cached `all_`
+  answer silently lost part of its coverage scope with no error at all. The cache is now keyed per
+  connection profile and cleared by **Refresh**, so a mid-session grant or revoke no longer needs a
+  window reload to take effect either.
+- Expanding two Test Explorer nodes at once (or starting a run, which re-resolves its subtree first)
+  could send the same connection profile's full suite-discovery query to the database more than once
+  in parallel instead of sharing a single result — a query that measures 27-59 seconds against the
+  documented 1000-package fixture, so this read as the Test Explorer hanging for the better part of a
+  minute just from expanding two things quickly. Concurrent resolves for the same profile now share
+  one in-flight query.
+- Resolving a tree level whose rows have no matching local workspace source file — the workspace
+  shape this extension is meant to support, with the database as the sole source of truth and no
+  local `.pkb`/`.pks` files at all — opened a fresh pooled connection and queried object types on
+  every single level, even though every level for the same schema asks the same question. Expanding
+  or running a large such tree (e.g. "Run All" on the documented 1000-package fixture) could rack up
+  well over a thousand sequential connection checkouts against a pool sized for as few as two
+  connections before the first test even started. Object types are now cached and primed once per
+  connection profile and schema instead of once per tree level.
 - The pre-run `run paths for '<profile>' = …` log line (embedding every selected `TestItem` id)
   and the `produce SQL: …` log line (embedding the entire generated PL/SQL block) were written to
   the `utPLSQL` output channel unconditionally on every run, instead of being gated behind
