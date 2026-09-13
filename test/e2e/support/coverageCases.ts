@@ -41,7 +41,8 @@ import { XSS_PAYLOAD } from '../../integration/support/fixture';
  * regardless of that specific behaviour — see each case's own comment.
  */
 
-const CACHE_PROFILE_UT_UT_EXPECTATION = ['UT', 'UT_EXPECTATION'];
+/** utplsql.coverage.excludeObjects value used across these cases — see withExcludedFramework below. */
+const FRAMEWORK_EXCLUDE_OBJECTS = ['UT', 'UT_EXPECTATION'];
 
 function findChild(collection: vscode.TestItemCollection, label: string): vscode.TestItem | undefined {
     let found: vscode.TestItem | undefined;
@@ -103,7 +104,7 @@ async function runCoverageCaptured(ctx: UtplsqlContext, items: vscode.TestItem[]
 async function withExcludedFramework<T>(fn: () => Promise<T>): Promise<T> {
     const cfg = vscode.workspace.getConfiguration('utplsql');
     const previous = cfg.get<string[]>('coverage.excludeObjects');
-    await cfg.update('coverage.excludeObjects', CACHE_PROFILE_UT_UT_EXPECTATION, vscode.ConfigurationTarget.Global);
+    await cfg.update('coverage.excludeObjects', FRAMEWORK_EXCLUDE_OBJECTS, vscode.ConfigurationTarget.Global);
     try {
         return await fn();
     } finally {
