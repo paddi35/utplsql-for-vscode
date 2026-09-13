@@ -51,7 +51,7 @@ describe('coverage reporting against a real schema [integration]', function () {
         // spec), so buildCoverageOptions() ended up scoping coverage to the
         // test package instead of CALC_PKG and producing an empty
         // a_source_file_mappings, i.e. no coverage was ever reported.
-        const deps = await includes(producerConn, TEST_OWNER, 'TEST_CALC_PKG');
+        const deps = await includes(producerConn, TEST_OWNER, 'TEST_CALC_PKG', 'integration');
         assert.ok(
             deps.some((d) => d.owner === TEST_OWNER && d.name === 'CALC_PKG'),
             `expected CALC_PKG among TEST_CALC_PKG's dependencies, got ${JSON.stringify(deps)}`
@@ -64,7 +64,7 @@ describe('coverage reporting against a real schema [integration]', function () {
         // need to know whether to point at the body or the spec, and to
         // simply skip names that aren't a package/package body at all
         // (e.g. a typo, or an object type this feature doesn't support).
-        const types = await getPackageObjectTypes(producerConn, TEST_OWNER, ['CALC_PKG', 'TEST_CALC_PKG', 'DOES_NOT_EXIST']);
+        const types = await getPackageObjectTypes(producerConn, TEST_OWNER, ['CALC_PKG', 'TEST_CALC_PKG', 'DOES_NOT_EXIST'], 'integration');
         assert.equal(types.get('CALC_PKG'), 'PACKAGE BODY');
         assert.equal(types.get('TEST_CALC_PKG'), 'PACKAGE BODY');
         assert.equal(types.has('DOES_NOT_EXIST'), false);

@@ -140,7 +140,7 @@ async function resolveVirtualTypes(
     }
     const conn = await getConnection(cfg, secrets);
     try {
-        return await measure('getPackageObjectTypes', () => dao.getPackageObjectTypes(conn, owner, names), { names: names.length });
+        return await measure('getPackageObjectTypes', () => dao.getPackageObjectTypes(conn, owner, names, profile), { names: names.length });
     } finally {
         await conn.close();
     }
@@ -345,6 +345,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
         suitesCache.clear();
         childrenIndexCache.clear();
         clearVersionCache();
+        dao.clearDbaViewCache();
         controller.items.forEach((root) => meta.deleteForProfile(parseId(root.id).profile));
         controller.items.replace([]);
         await controller.resolveHandler?.(undefined);
