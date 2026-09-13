@@ -27,6 +27,7 @@ import {
 import { escalateStatus } from '../model/tree';
 import { OwnedPath, dedupPathList, parseId, pathId } from './ids';
 import { UtplsqlContext } from './model';
+import { sanitizeTerminalText } from './terminalSanitize';
 import { formatCoverageScopeLine, formatProduceSqlLine, formatRunFailureLines, formatRunPathsLine, summarizeRun } from './runLogging';
 import { measure, PerfCounter } from '../perf';
 
@@ -172,7 +173,7 @@ function appendOutputCrlf(run: vscode.TestRun, text: string | undefined, item?: 
     if (!text) {
         return;
     }
-    run.appendOutput(text.replace(/\r?\n/g, '\r\n') + '\r\n', undefined, item);
+    run.appendOutput(sanitizeTerminalText(text).replace(/\r?\n/g, '\r\n') + '\r\n', undefined, item);
 }
 
 /**
