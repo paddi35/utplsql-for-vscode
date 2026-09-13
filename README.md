@@ -68,12 +68,15 @@ Run **utPLSQL: Add Connection** from the Command Palette (`Ctrl+Shift+P`). You w
 |---|---|
 | **Name** | Anything you like — it becomes the root node's label, e.g. `dev`. |
 | **User** | The database user that owns or can see the test packages. |
-| **Connect string** | Easy Connect (`host:1521/SERVICE`) or a TNS alias. Pick *Enter manually* if you have no `tnsnames.ora`. |
+| **Connect string** | Easy Connect (`host:1521/SERVICE`) or a TNS alias. Prefix with `tcps://` for a TLS-encrypted connection. Pick *Enter manually* if you have no `tnsnames.ora`. |
 | **Default schema** | Optional. Leave empty to use the connecting user's own schema. |
+| **Wallet directory** | Optional. Only needed for mutual TLS or an Autonomous Database wallet — leave empty otherwise. |
+| **Wallet password** | Only asked if a wallet directory was given. Optional (an auto-login wallet needs none); stored in `SecretStorage`. |
 | **Password** | Stored in VS Code's `SecretStorage` — never in `settings.json`, never logged. |
 
 An empty password is accepted and recorded as "no password yet"; run **utPLSQL: Set Password for
-Connection** before using the profile.
+Connection** before using the profile. Likewise, **utPLSQL: Set Wallet Password for Connection**
+updates or clears a wallet's password later without re-adding the profile.
 
 ### 2. Expand it in the Testing view
 
@@ -169,7 +172,7 @@ partial output rather than saving a truncated report as if it were finished.
 
 | Setting | Default | Description |
 |---|---|---|
-| `utplsql.connections` | `[]` | Connection profiles (`name`, `user`, `connectString`, optional `defaultSchema`). Managed via the commands above; edit directly only if you know what you're doing. |
+| `utplsql.connections` | `[]` | Connection profiles (`name`, `user`, `connectString`, optional `defaultSchema`, optional `walletLocation`). Managed via the commands above; edit directly only if you know what you're doing. |
 | `utplsql.connections.tnsAdminPath` | `""` | Folder containing `tnsnames.ora`. Falls back to the Oracle SQL Developer extension's `sqldeveloper.connections.tnsConfiguration.path` — but only a user/machine-level value for it, never one set by a workspace, since that setting's scope belongs to that extension and is not ours to restrict — then to `TNS_ADMIN`. If empty and you enter a TNS alias directly as the connect string, `node-oracledb` still resolves it itself at connect time. |
 | `utplsql.discovery.languageIds` | `["sql", "oracle-sql"]` | Language IDs treated as PL/SQL source for discovery and parsing. |
 | `utplsql.run.randomOrder` | `false` | Run tests in a random order (`a_random_test_order`) instead of declaration order, to surface hidden order dependencies between tests. |

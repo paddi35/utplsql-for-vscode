@@ -56,6 +56,8 @@ describe('addConnection wizard against settings + SecretStorage only [integratio
                 user: async () => 'hr',
                 connectString: async () => 'localhost:1521/FREEPDB1',
                 defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => 'first-secret'
             });
             await commands.runAddConnection(fakeExtCtx(secrets), {
@@ -63,6 +65,8 @@ describe('addConnection wizard against settings + SecretStorage only [integratio
                 user: async () => 'hr2',
                 connectString: async () => 'localhost:1521/OTHERPDB',
                 defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => 'second-secret'
             });
 
@@ -83,6 +87,8 @@ describe('addConnection wizard against settings + SecretStorage only [integratio
                 user: async () => 'hr',
                 connectString: async () => 'localhost:1521/FREEPDB1',
                 defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => undefined // Esc
             });
             assert.deepEqual((store['utplsql.connections'] as unknown[]) ?? [], []);
@@ -100,6 +106,8 @@ describe('addConnection wizard against settings + SecretStorage only [integratio
                 user: async () => 'hr',
                 connectString: async () => 'localhost:1521/FREEPDB1',
                 defaultSchema: async () => '1_bad_start', // SCHEMA_NAME_RE requires a leading letter
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => 'pw'
             });
             assert.deepEqual((store['utplsql.connections'] as unknown[]) ?? [], []);

@@ -1,5 +1,15 @@
 import * as vscode from 'vscode';
-import { addProfile, ConnectionProfile, getProfile, readProfiles, removeProfile, setPassword, validateProfileName } from '../db/connections';
+import {
+    addProfile,
+    ConnectionProfile,
+    deleteWalletPassword,
+    getProfile,
+    readProfiles,
+    removeProfile,
+    setPassword,
+    setWalletPassword,
+    validateProfileName
+} from '../db/connections';
 import { getPool, recyclePool, validateSchemaName, describeConnectionError } from '../db/pool';
 import { forgetProfile, getSuiteRows } from '../testing/controller';
 import * as dao from '../db/utplsqlDao';
@@ -33,7 +43,10 @@ async function pickConnectString(): Promise<string | undefined> {
             }
         }
     }
-    return vscode.window.showInputBox({ prompt: 'Easy-Connect string or TNS alias', ignoreFocusOut: true });
+    return vscode.window.showInputBox({
+        prompt: 'Easy-Connect string or TNS alias — prefix with tcps:// for a TLS-encrypted connection',
+        ignoreFocusOut: true
+    });
 }
 
 async function pickProfile(promptTitle: string): Promise<string | undefined> {
@@ -64,6 +77,10 @@ export interface AddConnectionPrompts {
     user(): Promise<string | undefined>;
     connectString(): Promise<string | undefined>;
     defaultSchema(): Promise<string | undefined>;
+    /** Wallet directory for mutual TLS / an Autonomous Database wallet — optional, only meaningful with a tcps:// connectString. */
+    walletLocation(): Promise<string | undefined>;
+    /** Only prompted when walletLocation was given. Optional even then — an auto-login wallet needs no password. */
+    walletPassword(location: string): Promise<string | undefined>;
     password(name: string, user: string): Promise<string | undefined>;
 }
 
@@ -91,6 +108,17 @@ const realAddConnectionPrompts: AddConnectionPrompts = {
             prompt: 'Default schema (optional, defaults to the DB user)',
             ignoreFocusOut: true,
             validateInput: (value) => (value ? schemaValidationMessage(value) : undefined)
+        }),
+    walletLocation: async () =>
+        vscode.window.showInputBox({
+            prompt: 'Wallet directory for mutual TLS / an Autonomous Database wallet (optional; leave empty unless using tcps://)',
+            ignoreFocusOut: true
+        }),
+    walletPassword: async (location) =>
+        vscode.window.showInputBox({
+            prompt: `Wallet password for '${location}' (optional — leave empty for an auto-login wallet; stored in SecretStorage)`,
+            password: true,
+            ignoreFocusOut: true
         }),
     password: async (name, user) =>
         vscode.window.showInputBox({
@@ -137,11 +165,22 @@ export async function runAddConnection(extCtx: vscode.ExtensionContext, prompts:
         if (defaultSchema) {
             validateSchemaName(defaultSchema);
         }
+        const walletLocation = await prompts.walletLocation();
+        const walletPassword = walletLocation ? await prompts.walletPassword(walletLocation) : undefined;
         const password = await prompts.password(name, user);
         if (password === undefined) {
             return;
         }
-        await addProfile({ name, user, connectString, defaultSchema: defaultSchema || undefined });
+        await addProfile({
+            name,
+            user,
+            connectString,
+            defaultSchema: defaultSchema || undefined,
+            ...(walletLocation ? { walletLocation } : {})
+        });
+        if (walletLocation && walletPassword) {
+            await setWalletPassword(extCtx.secrets, name, walletPassword);
+        }
         if (password) {
             await setPassword(extCtx.secrets, name, password);
             vscode.window.showInformationMessage(`utPLSQL: connection '${name}' added.`);
@@ -184,6 +223,35 @@ export function registerConnectionCommands(extCtx: vscode.ExtensionContext): voi
             // issue #19's most confusing symptom (no reload needed after this).
             await forgetProfile(name);
             vscode.window.showInformationMessage(`utPLSQL: password for '${name}' stored.`);
+        }),
+
+        vscode.commands.registerCommand('utplsql.setWalletPassword', async () => {
+            const name = await pickProfile('Select connection profile');
+            if (!name) {
+                return;
+            }
+            const profile = getProfile(name);
+            if (!profile?.walletLocation) {
+                vscode.window.showErrorMessage(`utPLSQL: connection '${name}' has no wallet directory configured.`);
+                return;
+            }
+            const password = await vscode.window.showInputBox({
+                prompt: `Wallet password for '${name}' (leave empty for an auto-login wallet)`,
+                password: true,
+                ignoreFocusOut: true
+            });
+            if (password === undefined) {
+                return;
+            }
+            if (password) {
+                await setWalletPassword(extCtx.secrets, name, password);
+            } else {
+                await deleteWalletPassword(extCtx.secrets, name);
+            }
+            // Same reasoning as utplsql.setPassword above: the cached pool (if
+            // any) was built with the old wallet password.
+            await forgetProfile(name);
+            vscode.window.showInformationMessage(`utPLSQL: wallet password for '${name}' ${password ? 'stored' : 'cleared'}.`);
         }),
 
         vscode.commands.registerCommand('utplsql.removeConnection', async () => {

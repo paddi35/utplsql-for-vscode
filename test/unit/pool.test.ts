@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import oracledb from 'oracledb';
 import { installModuleStub, uncacheAllSrcModules } from './support/moduleStub';
 import { createFakeVscode, createFakeSecretStorage } from './support/fakeVscode';
 
@@ -175,6 +176,100 @@ describe('pool (real oracledb, unreachable host, poolMin 0 — no database neede
         } finally {
             uninstall();
         }
+    });
+
+    /**
+     * oracledb.Pool does not expose walletLocation/walletPassword back as
+     * readable properties the way it does poolMax/queueTimeout/connectString
+     * above, so these two tests intercept oracledb.createPool() itself
+     * instead — a single mutable property on the same real, cached module
+     * object pool.ts's own `import oracledb from 'oracledb'` resolves to
+     * (unlike the module-resolution stubbing this file's top comment found
+     * unreliable, monkeypatching one already-loaded function is a plain,
+     * synchronous property swap). Always restored in a finally block so it
+     * cannot leak into another test.
+     */
+    describe('walletLocation/walletPassword (issue #83)', () => {
+        function interceptCreatePool(): { captured(): oracledb.PoolAttributes | undefined; restore(): void } {
+            const realCreatePool = oracledb.createPool;
+            let captured: oracledb.PoolAttributes | undefined;
+            (oracledb as unknown as { createPool: typeof oracledb.createPool }).createPool = ((attrs: oracledb.PoolAttributes) => {
+                captured = attrs;
+                return realCreatePool(attrs);
+            }) as typeof oracledb.createPool;
+            return {
+                captured: () => captured,
+                restore: () => {
+                    oracledb.createPool = realCreatePool;
+                }
+            };
+        }
+
+        it('passes walletLocation and the stored wallet password through to createPool when the profile configures a wallet', async () => {
+            const { pool, uninstall } = loadPool();
+            try {
+                const secrets = createFakeSecretStorage({
+                    'utplsql.password.unit-test-wallet': 'pw',
+                    'utplsql.walletPassword.unit-test-wallet': 'walletpw'
+                });
+                const intercepted = interceptCreatePool();
+                try {
+                    await pool.getPool(
+                        { name: 'unit-test-wallet', user: 'hr', connectString: UNREACHABLE_CONNECT_STRING, walletLocation: '/opt/wallet' },
+                        secrets
+                    );
+                } finally {
+                    intercepted.restore();
+                }
+                assert.equal(intercepted.captured()?.walletLocation, '/opt/wallet');
+                assert.equal(intercepted.captured()?.walletPassword, 'walletpw');
+
+                await pool.closePool('unit-test-wallet');
+            } finally {
+                uninstall();
+            }
+        });
+
+        it('omits walletLocation/walletPassword from createPool when the profile has no wallet configured', async () => {
+            const { pool, uninstall } = loadPool();
+            try {
+                const secrets = createFakeSecretStorage({ 'utplsql.password.unit-test-nowallet': 'pw' });
+                const intercepted = interceptCreatePool();
+                try {
+                    await pool.getPool({ name: 'unit-test-nowallet', user: 'hr', connectString: UNREACHABLE_CONNECT_STRING }, secrets);
+                } finally {
+                    intercepted.restore();
+                }
+                assert.equal(intercepted.captured()?.walletLocation, undefined);
+                assert.equal(intercepted.captured()?.walletPassword, undefined);
+
+                await pool.closePool('unit-test-nowallet');
+            } finally {
+                uninstall();
+            }
+        });
+
+        it('does not look up a wallet password when the profile has no walletLocation, even if one happens to be stored', async () => {
+            const { pool, uninstall } = loadPool();
+            try {
+                // A leftover secret from a wallet that was since removed from the profile — must not resurface.
+                const secrets = createFakeSecretStorage({
+                    'utplsql.password.unit-test-stale-wallet-secret': 'pw',
+                    'utplsql.walletPassword.unit-test-stale-wallet-secret': 'stale'
+                });
+                const intercepted = interceptCreatePool();
+                try {
+                    await pool.getPool({ name: 'unit-test-stale-wallet-secret', user: 'hr', connectString: UNREACHABLE_CONNECT_STRING }, secrets);
+                } finally {
+                    intercepted.restore();
+                }
+                assert.equal(intercepted.captured()?.walletPassword, undefined);
+
+                await pool.closePool('unit-test-stale-wallet-secret');
+            } finally {
+                uninstall();
+            }
+        });
     });
 
     describe('describeConnectionError', () => {

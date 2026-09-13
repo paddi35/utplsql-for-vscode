@@ -47,6 +47,8 @@ describe('runAddConnection (issue #25: order prompts, persist last, catch duplic
                 user: async () => 'hr',
                 connectString: async () => 'localhost:1521/FREEPDB1',
                 defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => 'hunter2'
             });
 
@@ -67,6 +69,8 @@ describe('runAddConnection (issue #25: order prompts, persist last, catch duplic
                 user: async () => 'hr',
                 connectString: async () => 'localhost:1521/FREEPDB1',
                 defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => undefined // Esc
             });
 
@@ -85,6 +89,8 @@ describe('runAddConnection (issue #25: order prompts, persist last, catch duplic
                 user: async () => 'hr',
                 connectString: async () => 'localhost:1521/FREEPDB1',
                 defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => '' // pressed Enter on an empty box, not Esc
             });
 
@@ -105,6 +111,8 @@ describe('runAddConnection (issue #25: order prompts, persist last, catch duplic
                 user: async () => 'hr',
                 connectString: async () => undefined, // cancelled
                 defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => 'hunter2'
             });
             assert.deepEqual(store['utplsql.connections'] ?? [], []);
@@ -126,6 +134,8 @@ describe('runAddConnection (issue #25: order prompts, persist last, catch duplic
                 user: async () => 'hr2',
                 connectString: async () => 'y',
                 defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => 'pw'
             });
 
@@ -148,11 +158,57 @@ describe('runAddConnection (issue #25: order prompts, persist last, catch duplic
                 user: async () => 'hr',
                 connectString: async () => 'x',
                 defaultSchema: async () => 'not a valid identifier!',
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => 'pw'
             });
 
             assert.deepEqual(store['utplsql.connections'] ?? [], []);
             assert.ok(messages.some((m) => m.kind === 'error' && m.message.includes('defaultSchema')));
+        } finally {
+            uninstall();
+        }
+    });
+
+    it('persists walletLocation and stores the wallet password when a wallet is configured (issue #83)', async () => {
+        const { commands, store, uninstall } = loadCommands();
+        try {
+            const secrets = createFakeSecretStorage();
+            await commands.runAddConnection(fakeExtCtx(secrets), {
+                name: async () => 'dev',
+                user: async () => 'hr',
+                connectString: async () => 'tcps://localhost:1522/FREEPDB1',
+                defaultSchema: async () => undefined,
+                walletLocation: async () => '/opt/wallet',
+                walletPassword: async () => 'walletsecret',
+                password: async () => 'hunter2'
+            });
+
+            assert.deepEqual(store['utplsql.connections'], [
+                { name: 'dev', user: 'hr', connectString: 'tcps://localhost:1522/FREEPDB1', defaultSchema: undefined, walletLocation: '/opt/wallet' }
+            ]);
+            assert.equal(await secrets.get('utplsql.walletPassword.dev'), 'walletsecret');
+        } finally {
+            uninstall();
+        }
+    });
+
+    it('leaves no walletLocation and stores no wallet password when the wallet prompt is left empty (issue #83)', async () => {
+        const { commands, store, uninstall } = loadCommands();
+        try {
+            const secrets = createFakeSecretStorage();
+            await commands.runAddConnection(fakeExtCtx(secrets), {
+                name: async () => 'dev',
+                user: async () => 'hr',
+                connectString: async () => 'localhost:1521/FREEPDB1',
+                defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => 'should never be prompted for, let alone stored',
+                password: async () => 'hunter2'
+            });
+
+            assert.deepEqual(store['utplsql.connections'], [{ name: 'dev', user: 'hr', connectString: 'localhost:1521/FREEPDB1', defaultSchema: undefined }]);
+            assert.equal(await secrets.get('utplsql.walletPassword.dev'), undefined);
         } finally {
             uninstall();
         }

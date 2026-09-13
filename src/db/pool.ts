@@ -1,5 +1,5 @@
 import oracledb from 'oracledb';
-import { ConnectionProfile, getPassword } from './connections';
+import { ConnectionProfile, getPassword, getWalletPassword } from './connections';
 import { resolveTnsAdminDirWithSource } from './tnsnames';
 import * as vscode from 'vscode';
 
@@ -165,6 +165,11 @@ export async function getPool(profile: ConnectionProfile, secrets: vscode.Secret
     }
     const configDir = resolveAndLogTnsAdminDir(profile.name);
     const schema = profile.defaultSchema ? validateSchemaName(profile.defaultSchema) : undefined;
+    // walletPassword is optional even with a walletLocation set — an
+    // auto-login wallet (cwallet.sso) needs none. node-oracledb's Thin mode
+    // reads walletLocation/walletPassword straight from PoolAttributes,
+    // no initOracleClient()/Thick mode involved.
+    const walletPassword = profile.walletLocation ? await getWalletPassword(secrets, profile.name) : undefined;
     const pool = await oracledb.createPool({
         user: profile.user,
         password,
@@ -195,7 +200,9 @@ export async function getPool(profile: ConnectionProfile, secrets: vscode.Secret
                   }
               }
             : {}),
-        ...(configDir ? { configDir } : {})
+        ...(configDir ? { configDir } : {}),
+        ...(profile.walletLocation ? { walletLocation: profile.walletLocation } : {}),
+        ...(walletPassword ? { walletPassword } : {})
     });
     pools.set(profile.name, pool);
     return pool;
