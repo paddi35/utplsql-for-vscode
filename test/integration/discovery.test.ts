@@ -3,8 +3,20 @@ import { Connection } from 'oracledb';
 import * as dao from '../../src/db/utplsqlDao';
 import { createSingleFlightCache } from '../../src/testing/singleFlight';
 import { createObjectTypeCache, ObjectType } from '../../src/testing/objectTypeCache';
+import { Candidate, candidateLabel } from '../../src/commands/resolveTarget';
 import { getTestConnection, closeTestPool, TEST_OWNER } from './support/db';
-import { installFixture, FIXTURE_OWNER_OBJECT, SUITEPATH_GROUP_PATH, SUITEPATH_FIXTURE_OBJECT } from './support/fixture';
+import {
+    installFixture,
+    FIXTURE_OWNER_OBJECT,
+    SUITEPATH_GROUP_PATH,
+    SUITEPATH_FIXTURE_OBJECT,
+    installDeepTagsFixture,
+    DEEP_TAGS_FIXTURE_OWNER_OBJECT,
+    DEEP_TAGS_SUITEPATH_GROUP_PATH,
+    DEEP_TAGS_TAG,
+    DEEP_TAGS_TAGGED_TEST,
+    DEEP_TAGS_UNTAGGED_TEST
+} from './support/fixture';
 
 const KNOWN_ITEM_TYPES = new Set(['UT_SUITE', 'UT_SUITE_CONTEXT', 'UT_TEST', 'UT_LOGICAL_SUITE']);
 
@@ -22,6 +34,7 @@ describe('utplsqlDao discovery against a real schema [integration]', function ()
     before(async () => {
         conn = await getTestConnection();
         await installFixture(conn);
+        await installDeepTagsFixture(conn);
     });
 
     after(async () => {
@@ -117,6 +130,32 @@ describe('utplsqlDao discovery against a real schema [integration]', function ()
         assert.ok(units.some((u) => u.objectName === 'CALC_PKG' && u.objectType === 'PACKAGE'));
     });
 
+    it('the generateTest QuickPick candidate list built from testables() has no duplicate labels and is stable in order across two calls (issue #29)', async () => {
+        // Reproduces testableCandidates()'s mapping (commands/index.ts) and
+        // chooseTarget()'s dedup-by-label-then-sort (resolveTarget.ts) --
+        // generateTest's real QuickPick fallback candidate-building path --
+        // against the live testables() result, using the same exported
+        // candidateLabel() helper those call sites use. Regression target
+        // named in the issue: the old ad hoc `arr.indexOf(n) === i` dedup in
+        // commands/index.ts:349 operated on procedure names only, not on the
+        // OWNER.OBJECT[.PROCEDURE] label chooseTarget actually offers.
+        const buildLabels = async (): Promise<string[]> => {
+            const units = await dao.testables(conn, TEST_OWNER);
+            const candidates: Candidate[] = units.map((u) => ({ owner: u.objectOwner, packageName: u.objectName, procedureName: u.subobjectName }));
+            const byLabel = new Map<string, Candidate>();
+            candidates.forEach((c) => byLabel.set(candidateLabel(c), c));
+            return [...byLabel.keys()].sort();
+        };
+
+        const first = await buildLabels();
+        assert.ok(first.length > 0, 'expected at least one candidate from a schema with testable units');
+        assert.deepEqual(first, [...new Set(first)], 'expected no duplicate OWNER.OBJECT[.PROCEDURE] labels');
+        assert.deepEqual(first, [...first].sort(), 'expected a stable (sorted) QuickPick order');
+
+        const second = await buildLabels();
+        assert.deepEqual(second, first, 'expected the same candidate list, in the same order, across two independent calls');
+    });
+
     it('includes() reads dependencies forwards: calc_pkg does not list its own test package', async () => {
         // The complement of coverage.test.ts's forward-direction check, and a
         // regression guard for the backwards *_dependencies query described
@@ -197,5 +236,35 @@ describe('utplsqlDao discovery against a real schema [integration]', function ()
         }
 
         assert.equal(calls, 1, `expected exactly one getPackageObjectTypes call priming ${levels.size} resolved levels of the same owner, got ${calls}`);
+    });
+
+    it('discovers a --%tags(...) annotation nested under a --%suitepath group and a --%context, and collectTags surfaces it, without any tree ever being built (issue #18)', async () => {
+        // The whole point of issue #18's fix: getSuitesInfo/collectTags are
+        // called directly here, exactly as controller.ts's getSuiteRows +
+        // dao.collectTags are from commands/index.ts's runWithTags -- no
+        // vscode.TestItem, no MetaStore, nothing resolved/expanded above this
+        // row at all. Before the fix, the equivalent MetaStore-based query in
+        // runWithTags could only ever see this tag if the suitepath group AND
+        // the context had both already been expanded in the Test Explorer.
+        const rows = await dao.getSuitesInfo(conn, TEST_OWNER, DEEP_TAGS_FIXTURE_OWNER_OBJECT);
+
+        const group = rows.find((r) => r.path === DEEP_TAGS_SUITEPATH_GROUP_PATH);
+        assert.ok(group, `expected a --%suitepath group row at path '${DEEP_TAGS_SUITEPATH_GROUP_PATH}', got ${JSON.stringify(rows)}`);
+        assert.equal(group!.itemType, 'UT_LOGICAL_SUITE');
+
+        const tagged = rows.find((r) => r.itemName.toUpperCase() === DEEP_TAGS_TAGGED_TEST);
+        assert.ok(tagged, `expected to discover ${DEEP_TAGS_TAGGED_TEST}, got ${JSON.stringify(rows.map((r) => r.itemName))}`);
+        assert.equal(tagged!.itemType, 'UT_TEST');
+        assert.ok(
+            tagged!.path.startsWith(`${DEEP_TAGS_SUITEPATH_GROUP_PATH}.`) && tagged!.path !== `${DEEP_TAGS_SUITEPATH_GROUP_PATH}.${DEEP_TAGS_TAGGED_TEST.toLowerCase()}`,
+            `expected ${DEEP_TAGS_TAGGED_TEST}'s path to be nested at least one level below the suitepath group itself (i.e. inside the --%context), got '${tagged!.path}'`
+        );
+        assert.match(tagged!.tags ?? '', new RegExp(DEEP_TAGS_TAG, 'i'));
+
+        const untagged = rows.find((r) => r.itemName.toUpperCase() === DEEP_TAGS_UNTAGGED_TEST);
+        assert.ok(untagged);
+        assert.equal(untagged!.tags, undefined);
+
+        assert.deepEqual(dao.collectTags(rows), [DEEP_TAGS_TAG]);
     });
 });

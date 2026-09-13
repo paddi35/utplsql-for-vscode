@@ -11,8 +11,22 @@ import {
     clearDbaViewCache,
     getSuitesInfo,
     parseItemType,
-    isTestItem
+    isTestItem,
+    SuiteInfoRow
 } from '../../src/db/utplsqlDao';
+
+/** A full SuiteInfoRow with sane defaults, so a test only has to spell out the fields it actually cares about (issue #18's collectTags coverage below). */
+function suiteRow(overrides: Partial<SuiteInfoRow> = {}): SuiteInfoRow {
+    return {
+        objectOwner: 'HR',
+        objectName: 'TEST_PKG',
+        itemName: 'test_something',
+        itemType: 'UT_TEST',
+        path: 'test_pkg.test_something',
+        disabledFlag: false,
+        ...overrides
+    };
+}
 
 /**
  * Minimal scripted Connection fake for isDbaViewAccessible/getDbaView below —
@@ -118,6 +132,31 @@ describe('collectTags', () => {
             collectTags([{ tags: 'slow, integration' }, { tags: 'slow' }, { tags: 'fast , slow' }]),
             ['fast', 'integration', 'slow']
         );
+    });
+
+    // Issue #18's fix is "read tags from the discovery rows, not from
+    // materialized TestItems" — collectTags already takes rows and never
+    // looks at path/depth/owner, so the cases below pin that shape rather
+    // than change behaviour: a caller that (like the old MetaStore-based
+    // code) only ever sees shallow/single-owner rows would still pass these
+    // trivially, but a caller that filters by tree depth or by materialized
+    // item first would not.
+    it('returns tags carried by rows whose path is several levels below the schema, same as a shallow row', () => {
+        const deep = suiteRow({ path: 'alltests.grp1.grp2.ctx.deep_test', tags: 'slow' });
+        assert.deepEqual(collectTags([deep]), ['slow']);
+    });
+
+    it('splits, trims and dedupes tags: undefined, empty, doubled-comma and padded-whitespace inputs all reduce to the same set', () => {
+        assert.deepEqual(
+            collectTags([{ tags: undefined }, { tags: '' }, { tags: 'a,,b' }, { tags: ' a , b ' }]),
+            ['a', 'b']
+        );
+    });
+
+    it('merges tags from rows owned by two different schemas within one profile into one sorted list', () => {
+        const hrRow = suiteRow({ objectOwner: 'HR', tags: 'hr_only, shared' });
+        const financeRow = suiteRow({ objectOwner: 'FINANCE', objectName: 'FIN_PKG', tags: 'finance_only, shared' });
+        assert.deepEqual(collectTags([hrRow, financeRow]), ['finance_only', 'hr_only', 'shared']);
     });
 });
 

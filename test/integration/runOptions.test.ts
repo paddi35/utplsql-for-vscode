@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { Connection } from 'oracledb';
 import { getTestPool, closeTestPool, TEST_OWNER } from './support/db';
-import { installFixture } from './support/fixture';
+import { installFixture, installDeepTagsFixture, DEEP_TAGS_FIXTURE_OWNER_OBJECT, DEEP_TAGS_TAG, DEEP_TAGS_TAGGED_TEST, DEEP_TAGS_UNTAGGED_TEST } from './support/fixture';
 import { runPathsAndCollect } from './support/runProfile';
 
 /**
@@ -22,6 +22,7 @@ describe('a_tags and a_random_test_order against a real schema [integration]', f
         producerConn = await pool.getConnection();
         consumerConn = await pool.getConnection();
         await installFixture(producerConn);
+        await installDeepTagsFixture(producerConn);
     });
 
     after(async () => {
@@ -41,6 +42,31 @@ describe('a_tags and a_random_test_order against a real schema [integration]', f
         const postTests = events.map((e) => e.event).filter((e): e is Extract<typeof e, { type: 'post-test' }> => e.type === 'post-test');
         assert.equal(postTests.length, 1);
         assert.equal(postTests[0].id, 'test_calc_pkg.test_slow');
+    });
+
+    it('a_tags narrows a run down to a test nested under a --%suitepath group and a --%context, leaving its untagged sibling unrun (issue #18)', async () => {
+        // Pins the deep case: DEEP_TAGS_TAGGED_TEST only becomes reachable by
+        // resolving test_deep_tags_pkg's --%suitepath group and its
+        // --%context -- exactly the depth issue #18's MetaStore-based tag
+        // list could not see before the fix. a_tags itself is unaffected by
+        // that (ut_runner.run resolves the whole schema's tags regardless of
+        // what any IDE has materialized), so this is really confirming the
+        // DB side already behaves as expected once the *tag list* is fixed
+        // to actually offer 'deep_only' in the first place.
+        const { events } = await runPathsAndCollect(producerConn, consumerConn, [`${TEST_OWNER}:${DEEP_TAGS_FIXTURE_OWNER_OBJECT}`], {
+            tags: [DEEP_TAGS_TAG]
+        });
+        const preRun = events.find((e) => e.event.type === 'pre-run');
+        assert.ok(preRun);
+        assert.equal((preRun!.event as { totalNumberOfTests: number }).totalNumberOfTests, 1);
+
+        const postTests = events.map((e) => e.event).filter((e): e is Extract<typeof e, { type: 'post-test' }> => e.type === 'post-test');
+        assert.equal(postTests.length, 1);
+        assert.match(postTests[0].id.toUpperCase(), new RegExp(DEEP_TAGS_TAGGED_TEST));
+        assert.ok(
+            !postTests.some((t) => t.id.toUpperCase().includes(DEEP_TAGS_UNTAGGED_TEST)),
+            `expected ${DEEP_TAGS_UNTAGGED_TEST} to be excluded by the tag filter, got ${JSON.stringify(postTests.map((t) => t.id))}`
+        );
     });
 
     it('a_tags with a tag no test carries raises ORA-20204, same as an unmatched suite path', async () => {
