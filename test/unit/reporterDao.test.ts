@@ -28,6 +28,11 @@ describe('buildRunWithReporterSql', () => {
     it('rejects a reporter type that is not a plain identifier', () => {
         assert.throws(() => buildRunWithReporterSql('abc123', "ut_junit_reporter(); harmful_call; --", ['UT3']), /invalid reporter type/);
     });
+
+    it('escapes an id containing an apostrophe instead of breaking out of the literal', () => {
+        const sql = buildRunWithReporterSql("abc' --", 'ut_documentation_reporter', ['UT3']);
+        assert.match(sql, /set_reporter_id\('abc'' --'\)/);
+    });
 });
 
 /**

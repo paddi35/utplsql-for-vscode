@@ -33,7 +33,7 @@ export function buildRunWithReporterSql(id: string, reporterType: string, paths:
     return `DECLARE
    l_reporter ${reporterType} := ${reporterType}();
 BEGIN
-   l_reporter.set_reporter_id('${id}');
+   l_reporter.set_reporter_id(${quoteLiteral(id)});
    ut_runner.run(${runArgs});
 END;`;
 }

@@ -121,7 +121,7 @@ function fileMappingsLiteral(mappings: Array<{ file: string; owner: string; name
 function reportersClause(id: string, coverage?: CoverageOptions): ReportersClause {
     const rt = `l_rt_rep`;
     let decls = `${rt} ut_realtime_reporter := ut_realtime_reporter();`;
-    let inits = `${rt}.set_reporter_id('${id}');`;
+    let inits = `${rt}.set_reporter_id(${quoteLiteral(id)});`;
     let reporters = rt;
     let coverageId: string | undefined;
     let htmlId: string | undefined;
@@ -131,7 +131,7 @@ function reportersClause(id: string, coverage?: CoverageOptions): ReportersClaus
         const cov = `l_cov_rep`;
         decls += `\n   ${cov} ${coverage.reporter} := ${coverage.reporter}();`;
         decls += `\n   l_source_mappings ut_file_mappings := ut_file_mappings(\n            ${fileMappingsLiteral(coverage.fileMappings)}\n         );`;
-        inits += `\n   ${cov}.set_reporter_id('${coverageId}');`;
+        inits += `\n   ${cov}.set_reporter_id(${quoteLiteral(coverageId)});`;
         reporters += `, ${cov}`;
         if (coverage.testFileMappings && coverage.testFileMappings.length > 0) {
             decls += `\n   l_test_mappings ut_file_mappings := ut_file_mappings(\n            ${fileMappingsLiteral(coverage.testFileMappings)}\n         );`;
@@ -146,14 +146,14 @@ function reportersClause(id: string, coverage?: CoverageOptions): ReportersClaus
             htmlId = newReporterId();
             const html = `l_html_rep`;
             decls += `\n   ${html} ut_coverage_html_reporter := ut_coverage_html_reporter();`;
-            inits += `\n   ${html}.set_reporter_id('${htmlId}');`;
+            inits += `\n   ${html}.set_reporter_id(${quoteLiteral(htmlId)});`;
             reporters += `, ${html}`;
         }
         if (coverage.additionalReporter && coverage.additionalReporter !== coverage.reporter) {
             additionalCoverageId = newReporterId();
             const cov2 = `l_cov_rep2`;
             decls += `\n   ${cov2} ${coverage.additionalReporter} := ${coverage.additionalReporter}();`;
-            inits += `\n   ${cov2}.set_reporter_id('${additionalCoverageId}');`;
+            inits += `\n   ${cov2}.set_reporter_id(${quoteLiteral(additionalCoverageId)});`;
             reporters += `, ${cov2}`;
         }
     }
