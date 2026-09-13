@@ -127,4 +127,9 @@ describe('buildProduceSql', () => {
         };
         assert.throws(() => buildProduceSql('abc123', ['UT3'], { coverage }), /invalid include object/);
     });
+
+    it('escapes an id containing an apostrophe instead of breaking out of the literal', () => {
+        const { sql } = buildProduceSql("abc' --", ['UT3']);
+        assert.match(sql, /set_reporter_id\('abc'' --'\)/);
+    });
 });

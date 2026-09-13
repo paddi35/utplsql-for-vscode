@@ -24,6 +24,11 @@ describe('buildRunWithReporterSql', () => {
         const sql = buildRunWithReporterSql('abc123', 'ut_junit_reporter', ['UT3']);
         assert.match(sql, /l_reporter ut_junit_reporter := ut_junit_reporter\(\)/);
     });
+
+    it('escapes an id containing an apostrophe instead of breaking out of the literal', () => {
+        const sql = buildRunWithReporterSql("abc' --", 'ut_documentation_reporter', ['UT3']);
+        assert.match(sql, /set_reporter_id\('abc'' --'\)/);
+    });
 });
 
 /**
