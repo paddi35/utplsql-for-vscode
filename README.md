@@ -37,7 +37,7 @@ and reporter export, without needing SQL Developer, PL/SQL Developer or the `utP
 
 - Oracle Database with **utPLSQL >= 3.1.3** installed (>= 3.1.4 for the real-time reporter used
   for running tests; discovery and reporter export need >= 3.1.3 for `get_suites_info`).
-- VS Code **1.85** or newer.
+- VS Code **1.137** or newer.
 - Network access from the machine running VS Code to the database (this extension connects
   directly via [`node-oracledb`](https://github.com/oracle/node-oracledb) in Thin mode — no
   Oracle Client install required).

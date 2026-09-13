@@ -259,3 +259,95 @@ describe('README settings table vs. contributes.configuration.properties', () =>
         }
     });
 });
+
+/**
+ * vsce refuses to package when @types/vscode declares a newer editor than
+ * engines.vscode ("@types/vscode ^1.137.0 greater than engines.vscode
+ * ^1.85.0"), and that failure only ever showed up in the Package .vsix CI
+ * step -- long after the dependency update that caused it looked green
+ * locally. These two guards move that check to the unit suite, and pin the
+ * README's stated minimum to the manifest so the requirement users read
+ * cannot drift away from the one the editor enforces.
+ */
+describe('engines.vscode vs. @types/vscode and the README requirement', () => {
+    /** "^1.137.0" -> [1, 137]. Only major/minor matter -- VS Code's type definitions are published per minor. */
+    function majorMinor(range: string): [number, number] {
+        const match = /(\d+)\.(\d+)/.exec(range);
+        assert.ok(match, `expected a x.y version in '${range}'`);
+        return [Number(match![1]), Number(match![2])];
+    }
+
+    it('does not ask for type definitions newer than the engine it declares', () => {
+        const manifest = JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, 'utf8')) as {
+            engines: { vscode: string };
+            devDependencies: Record<string, string>;
+        };
+        const [engineMajor, engineMinor] = majorMinor(manifest.engines.vscode);
+        const [typesMajor, typesMinor] = majorMinor(manifest.devDependencies['@types/vscode']);
+
+        assert.ok(
+            typesMajor < engineMajor || (typesMajor === engineMajor && typesMinor <= engineMinor),
+            `@types/vscode ${typesMajor}.${typesMinor} is newer than engines.vscode ${engineMajor}.${engineMinor}; ` +
+                'vsce will refuse to package. Raise engines.vscode (and the README requirement) or pin @types/vscode back.'
+        );
+    });
+
+    it("README's stated minimum VS Code version matches engines.vscode", () => {
+        const manifest = JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, 'utf8')) as { engines: { vscode: string } };
+        const [major, minor] = majorMinor(manifest.engines.vscode);
+        const stated = /- VS Code \*\*(\d+)\.(\d+)\*\* or newer\./.exec(loadReadme());
+
+        assert.ok(stated, "README.md's Requirements section no longer states a '- VS Code **x.y** or newer.' line");
+        assert.deepEqual(
+            [Number(stated![1]), Number(stated![2])],
+            [major, minor],
+            `README.md promises VS Code ${stated![1]}.${stated![2]} but package.json's engines.vscode is ${major}.${minor}`
+        );
+    });
+});
+
+
+/**
+ * vsce does not read .gitignore, so anything gitignored has to be listed in
+ * .vscodeignore separately or it ends up inside the published .vsix. This
+ * already happened twice: test/perf's test-results/ was being shipped to the
+ * Marketplace, and .claude/'s agent worktrees (which contain node_modules
+ * junctions) made `vsce package` fail outright.
+ */
+describe('.gitignore vs. .vscodeignore', () => {
+    const GITIGNORE_PATH = path.resolve(ROOT, '.gitignore');
+    const VSCODEIGNORE_PATH = path.resolve(ROOT, '.vscodeignore');
+
+    /**
+     * dist/ is the one directory that is gitignored on purpose and shipped on
+     * purpose -- it holds the esbuild bundle that *is* the extension.
+     */
+    const SHIPPED_ANYWAY = new Set(['dist']);
+
+    function trimmedLines(file: string): string[] {
+        return fs
+            .readFileSync(file, 'utf8')
+            .split(/\r?\n/)
+            .map((l) => l.trim());
+    }
+
+    /** Gitignore entries that name a directory, i.e. the ones ending in a slash, with that slash dropped. */
+    function ignoredDirectories(file: string): string[] {
+        return trimmedLines(file)
+            .filter((l) => l.length > 0 && !l.startsWith('#') && l.endsWith('/'))
+            .map((l) => l.slice(0, -1));
+    }
+
+    it('excludes every gitignored directory from the package, except the built bundle', () => {
+        const excluded = new Set(trimmedLines(VSCODEIGNORE_PATH));
+        for (const dir of ignoredDirectories(GITIGNORE_PATH)) {
+            if (SHIPPED_ANYWAY.has(dir)) {
+                continue;
+            }
+            assert.ok(
+                excluded.has(`${dir}/**`),
+                `.gitignore hides ${dir}/ but .vscodeignore does not list '${dir}/**', so it would be published in the .vsix`
+            );
+        }
+    });
+});

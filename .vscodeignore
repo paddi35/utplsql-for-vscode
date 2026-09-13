@@ -16,3 +16,17 @@ tsconfig.json
 # All runtime dependencies (oracledb included) are inlined into
 # dist/extension.js by esbuild, so none of node_modules is needed at runtime.
 node_modules/**
+
+# Local artefacts, all gitignored -- but vsce does not read .gitignore, so
+# they have to be listed here as well or they travel into the published
+# .vsix: tsc's outDir, the perf harness's JSONL reports, and the whole copy
+# of VS Code that @vscode/test-electron downloads for the e2e run.
+# test/unit/manifest.test.ts asserts this list stays in sync with .gitignore.
+out/**
+test-results/**
+.vscode-test/**
+
+# Claude Code's scratch space. Agent worktrees live here and contain
+# node_modules directory junctions, which vsce follows -- packaging fails
+# outright with "not a file: .../node_modules" rather than shipping them.
+.claude/**

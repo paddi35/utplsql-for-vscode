@@ -46,6 +46,14 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
 
 ### Changed
 
+- **Minimum VS Code raised from 1.85 to 1.137.** `@types/vscode` has to stay at or below
+  `engines.vscode` (vsce refuses to package otherwise), so the type definitions could not be
+  updated while the engine floor stayed at 1.85. No API newer than 1.85 is used yet; this only
+  moves the floor so the definitions can track the editor. Users on an older VS Code keep the
+  previously published version.
+- The packaged `.vsix` no longer carries `test-results/`, `.vscode-test/` or `.claude/`. All three
+  are gitignored, but vsce does not read `.gitignore`, so a local perf report could be shipped to
+  the Marketplace (and an agent worktree made `vsce package` fail outright).
 - The Test Explorer tree is now materialized one level at a time: expanding a schema, suite, or
   package builds only its direct children instead of eagerly turning every row the schema's suites
   return into a `TestItem` up front, which made expanding a schema with many packages noticeably
