@@ -250,7 +250,10 @@ rather than fail.
 
 The diagrams in this README are authored as SVG in `docs/images/` and rasterised to PNG alongside
 them — the VS Code Marketplace rejects SVG in a README, so the PNGs are what the README
-references. Re-render after editing an SVG (any headless Chromium will do):
+references. The extension icon is the same arrangement: `docs/images/icon-source.png` is the
+full-resolution original, and the shipped `icon.png` is a 256×256 rendering of it, which is what
+keeps the packaged `.vsix` at a couple of hundred KB rather than a megabyte. Re-render either
+after editing (any headless Chromium will do):
 
 ```sh
 chrome --headless --force-device-scale-factor=2 --window-size=900,470 \
