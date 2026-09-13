@@ -13,6 +13,7 @@ import { measure, setPerfOutputChannel } from '../perf';
 import { runReporterExport } from './reporterProfile';
 import { getCachedVersion, clearVersionCache } from '../db/versionCache';
 import { createSingleFlightCache } from './singleFlight';
+import { createObjectTypeCache } from './objectTypeCache';
 
 /**
  * Single-flighted per-profile cache of the full get_suites_info row set (see
@@ -23,6 +24,9 @@ import { createSingleFlightCache } from './singleFlight';
  * 1000-package fixture (issue #17).
  */
 const suiteRowsCache = createSingleFlightCache<SuiteInfoRow[]>();
+
+/** Per (profile, owner) PACKAGE/PACKAGE BODY object-type cache backing resolveVirtualTypes below — see objectTypeCache.ts (issue #22). */
+const objectTypeCache = createObjectTypeCache();
 
 /**
  * Per (profile, owner), which SuiteInfoRow[] are the direct children of
@@ -129,6 +133,15 @@ function resolveVirtualLocation(
     return pointAt(virtualSourceUri(profile, owner, row.objectName, type === 'PACKAGE BODY'), row.itemLineNo);
 }
 
+/**
+ * Resolves PACKAGE/PACKAGE BODY types for `names` under (profile, owner)
+ * through objectTypeCache (issue #22) instead of a fresh pooled connection
+ * and dao.getPackageObjectTypes call per invocation. materializeLevel below
+ * always passes the owner's *entire* distinct missing-name set here, not
+ * just the current level's — see objectTypeCache.ts's doc comment for why
+ * that is what makes "one round trip per owner" actually happen instead of
+ * "one (smaller) round trip per level".
+ */
 async function resolveVirtualTypes(
     secrets: vscode.SecretStorage,
     profile: string,
@@ -142,12 +155,36 @@ async function resolveVirtualTypes(
     if (!cfg) {
         return new Map();
     }
-    const conn = await getConnection(cfg, secrets);
-    try {
-        return await measure('getPackageObjectTypes', () => dao.getPackageObjectTypes(conn, owner, names, profile), { names: names.length });
-    } finally {
-        await conn.close();
+    return objectTypeCache.resolve(profile, owner, names, async (toFetch) => {
+        const conn = await getConnection(cfg, secrets);
+        try {
+            return await measure('getPackageObjectTypes', () => dao.getPackageObjectTypes(conn, owner, toFetch, profile), { names: toFetch.length });
+        } finally {
+            await conn.close();
+        }
+    });
+}
+
+/**
+ * Every distinct objectName across *all* rows known for this owner (every
+ * bucket of the owner's children index, not just one level's rowsAtLevel)
+ * that has no local workspace source — the priming set resolveVirtualTypes
+ * needs to turn "one getPackageObjectTypes call per owner" from an
+ * aspiration into what actually happens (see objectTypeCache.ts). Pure
+ * in-memory work over an already-built index (no DB access itself), so
+ * recomputing it on every materializeLevel call for an owner is cheap; the
+ * cache it feeds is what makes the *DB* call happen at most once.
+ */
+function allMissingNamesForOwner(sourceIndex: SourceIndex, index: ReadonlyMap<string, SuiteInfoRow[]>): string[] {
+    const missing = new Set<string>();
+    for (const rows of index.values()) {
+        for (const row of rows) {
+            if (!resolveLocation(sourceIndex, row)) {
+                missing.add(row.objectName);
+            }
+        }
     }
+    return [...missing];
 }
 
 /**
@@ -194,7 +231,12 @@ async function materializeLevel(
             missingNames.add(row.objectName);
         }
     }
-    const virtualTypes = await resolveVirtualTypes(secrets, profile, owner, [...missingNames]);
+    // Only bother priming (and paying allMissingNamesForOwner's owner-wide
+    // scan) when this level actually needs a virtual-source lookup at all —
+    // an owner that's fully covered by local workspace files never triggers
+    // this, the same as before.
+    const virtualTypes =
+        missingNames.size > 0 ? await resolveVirtualTypes(secrets, profile, owner, allMissingNamesForOwner(sourceIndex, index)) : new Map<string, 'PACKAGE BODY' | 'PACKAGE'>();
 
     const expectedIds = new Set<string>();
     for (const row of rowsAtLevel) {
@@ -353,6 +395,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
     controller.refreshHandler = async () => {
         suiteRowsCache.clear();
         childrenIndexCache.clear();
+        objectTypeCache.clear();
         clearVersionCache();
         dao.clearDbaViewCache();
         controller.items.forEach((root) => meta.deleteForProfile(parseId(root.id).profile));

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { Connection } from 'oracledb';
 import * as dao from '../../src/db/utplsqlDao';
 import { createSingleFlightCache } from '../../src/testing/singleFlight';
+import { createObjectTypeCache, ObjectType } from '../../src/testing/objectTypeCache';
 import { getTestConnection, closeTestPool, TEST_OWNER } from './support/db';
 import { installFixture, FIXTURE_OWNER_OBJECT, SUITEPATH_GROUP_PATH, SUITEPATH_FIXTURE_OBJECT } from './support/fixture';
 
@@ -162,5 +163,39 @@ describe('utplsqlDao discovery against a real schema [integration]', function ()
         // not trigger a fourth round trip.
         await fetchForProfile();
         assert.equal(calls, 1);
+    });
+
+    it('primes an owner\'s object types once and reuses them across every resolved level, instead of once per level (issue #22)', async () => {
+        // Every distinct suitepath/context/suitepath-group level across the
+        // whole owner's rows -- the same partition materializeLevel's
+        // children index produces -- used here only to drive N separate
+        // resolve() calls, one per level, the way N separate
+        // materializeLevel invocations of the real tree would.
+        const rows = await dao.getSuitesInfo(conn, TEST_OWNER);
+        const levels = new Set(
+            rows.map((r) => {
+                const dot = r.path.lastIndexOf('.');
+                return dot === -1 ? '' : r.path.slice(0, dot);
+            })
+        );
+        assert.ok(levels.size >= 2, `expected at least two distinct levels across the fixture (test_calc_pkg's context plus test_suitepath_pkg's group), got ${JSON.stringify([...levels])}`);
+
+        const cache = createObjectTypeCache();
+        let calls = 0;
+        // "No local source files available to the index" (the issue's own
+        // framing): every level's priming set is the full owner name list,
+        // exactly what allMissingNamesForOwner (controller.ts) computes when
+        // nothing resolves locally.
+        const allNames = [...new Set(rows.map((r) => r.objectName))];
+        const fetchAll = (toFetch: string[]): Promise<Map<string, ObjectType>> => {
+            calls++;
+            return dao.getPackageObjectTypes(conn, TEST_OWNER, toFetch, 'integration');
+        };
+
+        for (const _level of levels) {
+            await cache.resolve('integration-profile', TEST_OWNER, allNames, fetchAll);
+        }
+
+        assert.equal(calls, 1, `expected exactly one getPackageObjectTypes call priming ${levels.size} resolved levels of the same owner, got ${calls}`);
     });
 });
