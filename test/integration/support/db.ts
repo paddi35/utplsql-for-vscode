@@ -91,6 +91,33 @@ export async function getUnprivilegedTestConnection(): Promise<oracledb.Connecti
     return unprivPool.getConnection();
 }
 
+/**
+ * Whether the test schema may read v$session.
+ *
+ * cancel.test.ts and pool.test.ts both assert on session *lifecycle* --
+ * that a cancelled export leaves nothing behind, and that closePool()
+ * really ends a profile's sessions -- which cannot be observed from
+ * inside the sessions themselves. The docker fixture grants it (see
+ * docker/oracle-utplsql/init-scripts/15-grant-session-view.sh), but that
+ * script only runs when the database is first created, so an older
+ * container or a different database will not have it; there the two
+ * suites skip rather than fail with ORA-00942.
+ *
+ * Probed with a no-row query so it costs nothing and cannot depend on
+ * what happens to be connected at the time.
+ */
+export async function canReadSessionView(conn: oracledb.Connection): Promise<boolean> {
+    try {
+        await conn.execute('SELECT sid FROM v$session WHERE 1 = 0');
+        return true;
+    } catch (err) {
+        if (String(err).includes('ORA-00942')) {
+            return false;
+        }
+        throw err;
+    }
+}
+
 export async function closeUnprivilegedTestPool(): Promise<void> {
     if (!unprivPool) {
         return;

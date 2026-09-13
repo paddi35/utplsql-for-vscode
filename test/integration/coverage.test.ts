@@ -103,31 +103,38 @@ describe('coverage reporting against a real schema [integration]', function () {
     });
 
     /**
-     * Issue #13: src/testing/coverage.ts's webview-hardening only matters if
-     * ut_coverage_html_reporter's output really can carry a live
-     * "</script><script>...</script>" payload through to whatever renders
-     * it — this proves that half of the premise directly against a real
-     * utPLSQL instance, independent of anything this extension does with
-     * the result. installXssFixture() (test/integration/support/
-     * xssFixture.sql) installs a package whose *name* is an Oracle quoted
-     * identifier containing the payload, and whose body also carries it as
-     * a plain source comment; test_xss_pkg.test_calls_payload_pkg calls
-     * that package so it is actually exercised (and therefore reported)
-     * under coverage, scoped by schema (a_coverage_schemes) rather than by
-     * naming the payload package in a_include_objects/a_source_file_mappings
-     * — this suite's own dao.validateIdentifier-guarded SQL builder
-     * (src/db/realtimeDao.ts) rightly refuses a bind value that isn't a
-     * plain identifier, and routing the payload through it would be testing
-     * this extension's own SQL construction, not utPLSQL's reporter output.
+     * Issue #13 assumed ut_coverage_html_reporter would hand a live
+     * "</script><script>...</script>" payload straight through, which is what
+     * would make rendering its output in a webview with unsafe-inline
+     * dangerous. Run against a real utPLSQL 3.2.3 instance, that is not what
+     * happens: the reporter HTML-escapes the payload (it appears as
+     * "&lt;/script&gt;&lt;script&gt;..." in both the summary link and the
+     * source-file header), so the payload never survives verbatim.
      *
-     * No assertion here about escaping either way — the point is only that
-     * the payload survives byte-for-byte, which is what makes
-     * test/unit/coverageHtml.test.ts's containment assertions meaningful
-     * (rather than defending against a threat that was never real) and is
-     * exactly what a real DB-side reporter needs to do for the extension's
-     * rendering choice to matter at all.
+     * The mitigation is still right -- the extension does not get to assume a
+     * database-side reporter escapes on its behalf, at this or any other
+     * version, and the coverage HTML is built from schema-controlled object
+     * names. What changes is the justification: this is defence in depth, not
+     * a fix for a payload observed reaching the renderer.
+     *
+     * So this test pins the escaping instead of the pass-through. If a future
+     * utPLSQL version stops escaping, the first assertion fails and says so
+     * loudly, which is exactly when the premise behind
+     * test/unit/coverageHtml.test.ts stops being theoretical.
+     *
+     * installXssFixture() (test/integration/support/xssFixture.sql) installs a
+     * package whose *name* is an Oracle quoted identifier containing the
+     * payload, and whose body also carries it as a plain source comment;
+     * test_xss_pkg.test_calls_payload_pkg calls that package so it is actually
+     * exercised (and therefore reported) under coverage, scoped by schema
+     * (a_coverage_schemes) rather than by naming the payload package in
+     * a_include_objects/a_source_file_mappings -- this suite's own
+     * dao.validateIdentifier-guarded SQL builder (src/db/realtimeDao.ts)
+     * rightly refuses a bind value that isn't a plain identifier, and routing
+     * the payload through it would be testing this extension's own SQL
+     * construction, not utPLSQL's reporter output.
      */
-    it('lets ut_coverage_html_reporter output carry an unescaped <script> payload straight through', async () => {
+    it('has ut_coverage_html_reporter HTML-escape a <script> payload rather than pass it through', async () => {
         const coverage: CoverageOptions = {
             reporter: 'ut_coverage_sonar_reporter',
             schemes: [TEST_OWNER],
@@ -138,10 +145,21 @@ describe('coverage reporting against a real schema [integration]', function () {
         const { htmlReport } = await runPathsAndCollect(producerConn, consumerConn, [`${TEST_OWNER}:${XSS_TEST_PATH}`], { coverage });
         assert.ok(htmlReport, 'expected the html coverage reporter to produce output');
 
-        const occurrences = htmlReport!.split(XSS_PAYLOAD).length - 1;
+        const verbatim = htmlReport!.split(XSS_PAYLOAD).length - 1;
+        assert.equal(
+            verbatim,
+            0,
+            `ut_coverage_html_reporter no longer escapes its output: the payload appeared verbatim ${verbatim} time(s). The extension's own hardening (src/testing/coverageHtml.ts) now guards a live payload, not a theoretical one.`
+        );
+
+        // Without this the assertion above would also pass on an empty or
+        // failed report -- the escaped form is the proof that the payload
+        // package really was covered and really did reach the reporter's
+        // output.
+        const escaped = XSS_PAYLOAD.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         assert.ok(
-            occurrences >= 2,
-            `expected the payload to appear verbatim at least twice (package name + source comment), got ${occurrences} occurrence(s) in: ${htmlReport}`
+            htmlReport!.includes(escaped),
+            `expected the escaped payload in the report, so the payload package was demonstrably covered; got: ${htmlReport}`
         );
     });
 });

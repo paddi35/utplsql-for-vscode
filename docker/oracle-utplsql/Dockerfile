@@ -46,10 +46,12 @@ COPY --from=utplsql-src --chown=oracle:oinstall /utplsql /opt/utplsql
 # in die PDB installieren. Laufen automatisch nach der DB-/PDB-Erstellung,
 # vor "DATABASE IS READY TO USE!".
 COPY --chown=oracle:oinstall init-scripts/10-install-utplsql.sh       /container-entrypoint-initdb.d/10-install-utplsql.sh
+COPY --chown=oracle:oinstall init-scripts/15-grant-session-view.sh     /container-entrypoint-initdb.d/15-grant-session-view.sh
 COPY --chown=oracle:oinstall init-scripts/20-install-utplsql-tests.sh /container-entrypoint-initdb.d/20-install-utplsql-tests.sh
 
 USER root
 RUN chmod +x /container-entrypoint-initdb.d/10-install-utplsql.sh \
+              /container-entrypoint-initdb.d/15-grant-session-view.sh \
               /container-entrypoint-initdb.d/20-install-utplsql-tests.sh
 USER oracle
 
