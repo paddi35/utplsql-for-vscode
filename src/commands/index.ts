@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { addProfile, ConnectionProfile, getProfile, readProfiles, removeProfile, setPassword } from '../db/connections';
 import { getPool, recyclePool } from '../db/pool';
+import { forgetProfile, getSuiteRows } from '../testing/controller';
 import * as dao from '../db/utplsqlDao';
 import { runWithReporter as runWithReporterDao } from '../db/reporterDao';
 import { UtplsqlContext } from '../testing/model';
@@ -10,7 +11,6 @@ import { readReporterOptions } from '../testing/reporterConfig';
 import { generateTestPackage, readGenerateOptions } from '../generate/testTemplate';
 import { matchesConfiguredLanguage } from '../workspace/languageIndex';
 import { listTnsAliases, resolveTnsAdminDir } from '../db/tnsnames';
-import { getSuiteRows } from '../testing/controller';
 import { parseVirtualSourceUri } from '../workspace/virtualSource';
 import { Candidate, chooseTarget, editorTargetFromVirtualSource } from './resolveTarget';
 
@@ -88,11 +88,20 @@ export function registerConnectionCommands(extCtx: vscode.ExtensionContext): voi
             if (!name) {
                 return;
             }
-            const password = await vscode.window.showInputBox({ prompt: `Password for '${name}'`, password: true, ignoreFocusOut: true });
+            const password = await vscode.window.showInputBox({
+                prompt: `Password for connection '${name}'`,
+                password: true,
+                ignoreFocusOut: true
+            });
             if (password === undefined) {
                 return;
             }
             await setPassword(extCtx.secrets, name, password);
+            // The pool cached for `name` (if any) was built with the old
+            // password and would otherwise keep failing with ORA-01017
+            // forever, even though the just-stored secret is correct —
+            // issue #19's most confusing symptom (no reload needed after this).
+            await forgetProfile(name);
             vscode.window.showInformationMessage(`utPLSQL: password for '${name}' stored.`);
         }),
 
@@ -110,6 +119,13 @@ export function registerConnectionCommands(extCtx: vscode.ExtensionContext): voi
                 return;
             }
             await removeProfile(name, extCtx.secrets);
+            // Closes the pool (so its Oracle sessions don't outlive the
+            // profile) and clears the profile's caches directly; the
+            // controller's own onDidChangeConfiguration listener also fires
+            // from removeProfile's settings update and removes the root
+            // TestItem from the Testing view — this call doesn't depend on
+            // that timing for the part that matters here.
+            await forgetProfile(name);
             vscode.window.showInformationMessage(`utPLSQL: connection '${name}' removed.`);
         })
     );
