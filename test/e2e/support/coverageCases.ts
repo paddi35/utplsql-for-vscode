@@ -33,12 +33,13 @@ import { XSS_PAYLOAD } from '../../integration/support/fixture';
  * start, not created mid-run the way sourceIndexCases.ts's test_calc_pkg.pkb
  * is.
  *
- * There is no real Oracle instance available while writing this, so every
- * assertion below is unexecuted. Where the exact database-reporter behaviour
- * is genuinely uncertain (e.g. what fallback path string
- * ut_coverage_sonar_reporter invents for an object with no
- * a_source_file_mappings entry), the assertions are written to hold
- * regardless of that specific behaviour — see each case's own comment.
+ * Where the exact database-reporter behaviour is uncertain (e.g. what
+ * fallback path string ut_coverage_sonar_reporter invents for an object with
+ * no a_source_file_mappings entry), the assertions are written to hold
+ * regardless of that specific behaviour — see each case's own comment. These
+ * cases have since been run against a real utPLSQL 3.2.3 instance; where that
+ * contradicted an assumption, the case says so rather than the assumption
+ * being quietly kept (see the HTML-report XSS case).
  */
 
 /** utplsql.coverage.excludeObjects value used across these cases — see withExcludedFramework below. */
@@ -312,34 +313,76 @@ async function testCoverageHtmlReportWritesFileInsteadOfWebview(ctx: UtplsqlCont
 }
 
 /**
- * Stronger version of the case above: test_xss_pkg's payload package name
- * and source comment (test/integration/support/xssFixture.sql) are database-
- * authored text utPLSQL passes through ut_coverage_html_reporter completely
- * unescaped (see test/integration/coverage.test.ts's own XSS-passthrough
- * case, which proves the payload survives byte-for-byte at the DB/DAO
- * level). This proves the other half end-to-end: that payload reaches disk
- * verbatim without ever being executed inside a webview, since none exists
- * on this code path any more.
+ * A coverage run over a schema containing an object whose name is a quoted
+ * identifier: test_xss_pkg's payload-named dependency
+ * (test/integration/support/xssFixture.sql).
+ *
+ * Written originally to prove the payload reached disk verbatim, on the
+ * assumption that ut_coverage_html_reporter passes its input through
+ * unescaped. The first real run refuted both halves of that. utPLSQL 3.2.3
+ * escapes its output (test/integration/coverage.test.ts pins that at the DB
+ * level). And the payload never got that far anyway: the derived coverage
+ * scope put the object into a_include_objects, realtimeDao's
+ * validateIdentifier refused the name while building the SQL, and the entire
+ * coverage run failed with "invalid include object" -- so one legally-named
+ * Oracle object cost coverage for everything else in the schema.
+ *
+ * computeCoverageScope now drops such a name from the derived set and
+ * reports it, which is what this case pins: the run completes, the report is
+ * a file with the hardened CSP and no webview anywhere on the path, and the
+ * user is told which object was left out and why.
  */
 async function testCoverageHtmlReportPreservesXssPayload(ctx: UtplsqlContext, xssPkg: vscode.TestItem): Promise<void> {
     await vscode.workspace.getConfiguration('utplsql').update('coverage.htmlReport', true, vscode.ConfigurationTarget.Global);
     const before = listCoverageHtmlFiles();
     const cts = new vscode.CancellationTokenSource();
+    // The extension reports a failed coverage run into its output channel and
+    // carries on, so without capturing it a failure here is just "no file",
+    // with no way to tell a broken run apart from a reporter that produced
+    // nothing. Captured for the assertion message only.
+    const logged: string[] = [];
+    const originalAppendLine = ctx.output.appendLine.bind(ctx.output);
+    ctx.output.appendLine = (value: string): void => {
+        logged.push(value);
+        originalAppendLine(value);
+    };
     try {
-        await runCoverage(ctx, new vscode.TestRunRequest([xssPkg]), cts.token);
+        // withExcludedFramework, exactly as the case above: this fixture
+        // installs utPLSQL into the same schema as the tests, so without
+        // excluding UT/UT_EXPECTATION the derived coverage scope swallows the
+        // framework itself.
+        await withExcludedFramework(() => runCoverage(ctx, new vscode.TestRunRequest([xssPkg]), cts.token));
     } finally {
+        ctx.output.appendLine = originalAppendLine;
         cts.dispose();
         await vscode.workspace.getConfiguration('utplsql').update('coverage.htmlReport', false, vscode.ConfigurationTarget.Global);
     }
 
     const after = listCoverageHtmlFiles();
     const newFiles = [...after].filter((f) => !before.has(f));
-    assert.equal(newFiles.length, 1, `expected exactly one new utplsql-coverage-*.html file for the XSS-fixture run, got: ${JSON.stringify(newFiles)}`);
+    assert.equal(
+        newFiles.length,
+        1,
+        `expected exactly one new utplsql-coverage-*.html file for the XSS-fixture run, got: ${JSON.stringify(newFiles)}.` +
+            ` Extension output during the run:\n${logged.join('\n')}`
+    );
     const content = fs.readFileSync(path.join(os.tmpdir(), newFiles[0]), 'utf8');
     assert.ok(content.includes('Content-Security-Policy'), 'expected the hardened CSP meta tag in the written file');
+
+    // The object was dropped deliberately and the user was told why. A
+    // silent drop would be worse than the crash it replaced: coverage would
+    // simply be missing for that object with nothing to explain it.
     assert.ok(
-        content.includes(XSS_PAYLOAD),
-        'expected the database-authored XSS payload to survive to disk verbatim — proving it never had to reach a webview to be contained'
+        logged.some((line) => line.includes(XSS_PAYLOAD) && line.includes('not a plain identifier')),
+        `expected the run to report excluding the payload-named object from the coverage scope. Output was:\n${logged.join('\n')}`
+    );
+
+    // Excluded from the scope means absent from the report -- neither
+    // verbatim nor escaped. The point of this case is that the *run*
+    // survives a hostile object name, not that the name reaches disk.
+    assert.ok(
+        !content.includes(XSS_PAYLOAD),
+        'the payload-named object is excluded from the coverage scope, so it must not appear in the report at all'
     );
 }
 
@@ -455,7 +498,7 @@ export function buildCoverageCases(
         ['utplsql.coverage.reporter = cobertura produces additional, non-empty Cobertura XML via the (stubbed) save dialog', () => testCoberturaAdditionalReporterProducesFile(ctx, pkg)],
         ['the coverage HTML report is written to a temp file instead of an extension-host webview panel/tab', () => testCoverageHtmlReportWritesFileInsteadOfWebview(ctx, pkg)],
         [
-            'the coverage HTML report preserves an unescaped <script> payload from the database on disk, never inside a webview',
+            'a coverage run survives a schema object whose name is not a plain identifier, excluding just that object and saying so',
             () => {
                 assert.ok(xssPkg, "fixture package 'utplsql-vsc coverage html-reporter XSS passthrough fixture' not found under the schema — did installXssFixture run?");
                 return testCoverageHtmlReportPreservesXssPayload(ctx, xssPkg!);

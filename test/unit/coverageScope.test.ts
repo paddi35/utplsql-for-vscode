@@ -158,3 +158,61 @@ describe('computeCoverageScope', () => {
         assert.deepEqual(scope.schemes, []);
     });
 });
+
+/**
+ * An Oracle schema may legally hold a quoted identifier, and one turned up in
+ * this repo's own XSS fixture. Such a name cannot be written into the
+ * generated PL/SQL (realtimeDao's validateIdentifier refuses it), and before
+ * it was filtered here that refusal happened at SQL-build time — so a single
+ * oddly-named object anywhere in the schema failed the whole coverage run
+ * with "invalid include object", losing coverage for everything else too.
+ */
+describe('computeCoverageScope and names that cannot be identifiers', () => {
+    const items = [{ owner: 'UT3', objectName: 'TEST_CALC_PKG' }];
+    const noOverrides = { excludeObjects: [], schemesOverride: [], includeObjectsOverride: [] };
+
+    it('drops a dependency whose name is not a plain identifier and reports it, keeping the rest of the scope', async () => {
+        const scope = await computeCoverageScope(
+            items,
+            async () => [
+                { owner: 'UT3', name: 'CALC_PKG' },
+                { owner: 'UT3', name: 'UTPLSQLVSC_XSS_PKG</script><script>window.__pwned=1</script>' }
+            ],
+            noOverrides
+        );
+
+        assert.deepEqual(
+            [...scope.includeObjects.values()].map((o) => o.name),
+            ['CALC_PKG'],
+            'the usable dependency must survive — losing it too is the bug this filter exists to prevent'
+        );
+        assert.deepEqual(
+            scope.unusableNames.map((o) => `${o.owner}.${o.name}`),
+            ['UT3.UTPLSQLVSC_XSS_PKG</script><script>window.__pwned=1</script>']
+        );
+    });
+
+    it('drops a dependency whose owner is not a plain identifier either', async () => {
+        const scope = await computeCoverageScope(items, async () => [{ owner: 'WEIRD OWNER', name: 'CALC_PKG' }], noOverrides);
+        assert.equal(scope.includeObjects.size, 0);
+        assert.equal(scope.unusableNames.length, 1);
+    });
+
+    it('reports nothing when every derived dependency is a plain identifier', async () => {
+        const scope = await computeCoverageScope(items, async () => [{ owner: 'UT3', name: 'CALC_PKG' }], noOverrides);
+        assert.deepEqual(scope.unusableNames, []);
+    });
+
+    it('leaves an explicit includeObjects override untouched, so a name the user typed still fails loudly', async () => {
+        // The override deliberately replaces the derived set, and a name the
+        // user wrote by hand is worth an error rather than a silent drop —
+        // they can see and correct it, unlike a name the data dictionary
+        // happened to return.
+        const scope = await computeCoverageScope(items, async () => [{ owner: 'UT3', name: 'CALC_PKG' }], {
+            ...noOverrides,
+            includeObjectsOverride: ['NOT AN IDENTIFIER']
+        });
+        assert.deepEqual([...scope.includeObjects.values()].map((o) => o.name), ['NOT AN IDENTIFIER']);
+        assert.deepEqual(scope.unusableNames, []);
+    });
+});
