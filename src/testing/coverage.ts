@@ -1,6 +1,4 @@
 import * as vscode from 'vscode';
-import * as os from 'node:os';
-import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Connection } from 'oracledb';
 import { XMLParser } from 'fast-xml-parser';
@@ -369,16 +367,16 @@ export async function loadDetailedCoverage(
  * Webview anzeigen") stale; updating it is out of this change's scope
  * (package.json is off limits here) and left for a follow-up.
  *
- * The file is written under the OS temp directory rather than
- * context.globalStorageUri: ExtensionContext is not currently threaded into
- * this module (every function here takes UtplsqlContext instead, which does
- * not carry it), and threading it through would mean touching extension.ts,
- * out of scope for this fix. A fresh, randomly-named file per call avoids
- * collisions between reports from different profiles/runs in the same
- * session; nothing here deletes it afterwards, same as this file's existing
- * offerAdditionalCoverageFile save-dialog flow leaves its target file
- * alone — the OS reclaims its own temp directory on its own schedule, and
- * a coverage report is not sensitive enough to warrant more than that.
+ * The file is written under ExtensionContext.globalStorageUri (threaded
+ * through UtplsqlContext) rather than the OS temp directory: on Linux/macOS
+ * os.tmpdir() is world-readable (/tmp is mode 1777), which would expose the
+ * report's verbatim package source — not just coverage percentages — to any
+ * other local account, while global storage lives under the user's own
+ * profile. A fresh, randomly-named file per call still avoids collisions
+ * between reports from different profiles/runs in the same session; unlike
+ * that, previous reports under the same directory are removed before each
+ * new one is written, so at most one lingers between coverage runs instead
+ * of accumulating for the life of the temp directory.
  *
  * Only the write is awaited, not the notification/open/save that follows —
  * this function's caller (runCoverage) awaits it before calling run.end(),
@@ -391,10 +389,28 @@ export async function loadDetailedCoverage(
  * an unanswered "report is ready" notification sits on screen — unlike a
  * webview opening instantly, that time is unbounded.
  */
+async function clearPreviousReports(ctx: UtplsqlContext, reportsDir: vscode.Uri): Promise<void> {
+    try {
+        const entries = await vscode.workspace.fs.readDirectory(reportsDir);
+        await Promise.all(
+            entries
+                .filter(([name, type]) => type === vscode.FileType.File && name.startsWith('utplsql-coverage-') && name.endsWith('.html'))
+                .map(([name]) => vscode.workspace.fs.delete(vscode.Uri.joinPath(reportsDir, name)))
+        );
+    } catch (err) {
+        // Best-effort: a report we fail to clean up here just means one
+        // extra file lingers until the next run, not a functional failure.
+        ctx.output.appendLine(`utPLSQL: coverage HTML report — failed to clear previous reports: ${String(err)}`);
+    }
+}
+
 async function showHtmlReport(ctx: UtplsqlContext, html: string): Promise<void> {
     const hardened = withContentSecurityPolicy(html);
     const buffer = Buffer.from(hardened, 'utf8');
-    const tempUri = vscode.Uri.file(path.join(os.tmpdir(), `utplsql-coverage-${randomUUID()}.html`));
+    const reportsDir = vscode.Uri.joinPath(ctx.globalStorageUri, 'coverage-reports');
+    await vscode.workspace.fs.createDirectory(reportsDir);
+    await clearPreviousReports(ctx, reportsDir);
+    const tempUri = vscode.Uri.joinPath(reportsDir, `utplsql-coverage-${randomUUID()}.html`);
     await vscode.workspace.fs.writeFile(tempUri, buffer);
     ctx.output.appendLine(`utPLSQL: coverage HTML report written to ${tempUri.fsPath}`);
 
