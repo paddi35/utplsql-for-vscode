@@ -115,3 +115,64 @@ CREATE OR REPLACE PACKAGE BODY test_suitepath_pkg IS
 
 END test_suitepath_pkg;
 /
+-- Coverage e2e fixture (issue #28, test/e2e/support/coverageCases.ts). Kept as
+-- its own package pair rather than reusing calc_pkg/test_calc_pkg above,
+-- because those two need to keep their current "no local workspace file"
+-- state for as long as they do (the e2e virtual-source coverage case reuses
+-- that state directly, and sourceIndexCases.ts controls test_calc_pkg.pkb's
+-- local-file lifecycle for its own, unrelated #20/#26 cases). test/e2e/
+-- support/copyFixtures.js stages a matching coverage_local_pkg.pkb into the
+-- e2e workspace *before* the extension host starts, so SourceIndex maps
+-- coverage_local_pkg to a local file from activation onward -- the "local
+-- workspace file" shape the coverage e2e cases need. coverage_unmapped_fn is
+-- a real dependency that is deliberately not a PACKAGE/PACKAGE BODY (utPLSQL
+-- coverage.ts's resolveFileMappings only maps those two object types, see
+-- dao.getPackageObjectTypes), so it stays in a_include_objects (it is a real,
+-- executed dependency) while never getting a pathToUri entry -- reproducing
+-- the reporter's synthetic-fallback-path case parseSonarCoverage's
+-- onUnknownPath gate exists for, without depending on which fallback name the
+-- reporter happens to invent for it.
+CREATE OR REPLACE FUNCTION coverage_unmapped_fn RETURN NUMBER IS
+BEGIN
+  RETURN 1;
+END coverage_unmapped_fn;
+/
+CREATE OR REPLACE PACKAGE coverage_local_pkg IS
+  FUNCTION add_numbers(a NUMBER, b NUMBER) RETURN NUMBER;
+  FUNCTION never_called RETURN NUMBER;
+END coverage_local_pkg;
+/
+CREATE OR REPLACE PACKAGE BODY coverage_local_pkg IS
+
+  FUNCTION add_numbers(a NUMBER, b NUMBER) RETURN NUMBER IS
+  BEGIN
+    RETURN a + b;
+  END add_numbers;
+
+  FUNCTION never_called RETURN NUMBER IS
+  BEGIN
+    RETURN -1;
+  END never_called;
+
+END coverage_local_pkg;
+/
+CREATE OR REPLACE PACKAGE test_coverage_local_pkg IS
+
+  --%suite(utplsql-vsc coverage e2e fixture)
+
+  --%test(adds two numbers, exercising add_numbers and an unmapped standalone-function dependency, but never never_called)
+  PROCEDURE test_add_only;
+
+END test_coverage_local_pkg;
+/
+CREATE OR REPLACE PACKAGE BODY test_coverage_local_pkg IS
+
+  PROCEDURE test_add_only IS
+    l_unused NUMBER;
+  BEGIN
+    l_unused := coverage_unmapped_fn();
+    ut.expect(coverage_local_pkg.add_numbers(2, 3)).to_equal(5);
+  END test_add_only;
+
+END test_coverage_local_pkg;
+/
