@@ -60,6 +60,11 @@ extension contributes an `oracle-sql` language for common PL/SQL file extensions
 (`.pkb`, `.pks`, `.pls`, `.plb`, `.tps`, `.tpb`, `.prc`, `.fnc`, `.trg`, `.vw`); add matching
 entries to `files.associations` yourself for any extensions it doesn't already cover.
 
+None of this requires a local copy of your PL/SQL source. If your workspace has no matching source
+files at all, **utPLSQL: Run Test at Cursor**, **utPLSQL: Run with Reporter (Export)** and
+**utPLSQL: Generate Test Package** fall back to a QuickPick of the database objects discovered for
+the chosen connection profile — the database can be the sole source of truth.
+
 ## Commands
 
 | Command | Description |
@@ -67,11 +72,11 @@ entries to `files.associations` yourself for any extensions it doesn't already c
 | `utplsql.addConnection` | Add a new connection profile. |
 | `utplsql.setPassword` | (Re-)store a connection's password in `SecretStorage`. |
 | `utplsql.removeConnection` | Remove a connection profile and its stored password. |
-| `utplsql.runTestAtCursor` | Run the suite/test/package at the cursor position. |
+| `utplsql.runTestAtCursor` | Run the suite/test/package at the cursor position. Without a usable cursor (a virtual `utplsql-source://` document, or no local source file at all) falls back to a QuickPick of the profile's discovered database objects. |
 | `utplsql.runWithTags` | Run all tests carrying one or more chosen `--%tags(...)` values, for a connection profile. |
 | `utplsql.rebuildAnnotations` | Rebuild utPLSQL's own `--%annotation` cache for a profile's discovered schemas, then refresh the Test Explorer — use this if a newly added/changed `--%test` isn't showing up after a recompile. |
-| `utplsql.runWithReporter` | Run the package at the cursor with a chosen output reporter, to the Output channel or a file. The **Export with Reporter** run profile does the same for an arbitrary Test Explorer selection (one test, a suite, a multi-select), one file per connection profile involved. |
-| `utplsql.generateTest` | Generate a test package skeleton for the unit at the cursor. |
+| `utplsql.runWithReporter` | Run the package at the cursor (or picked from a QuickPick, same fallback as above) with a chosen output reporter, to the Output channel or a file. The **Export with Reporter** run profile does the same for an arbitrary Test Explorer selection (one test, a suite, a multi-select), one file per connection profile involved. |
+| `utplsql.generateTest` | Generate a test package skeleton for the unit at the cursor, or picked from a QuickPick of the profile's `testables()` when there is no cursor to resolve. |
 
 ## Settings
 
