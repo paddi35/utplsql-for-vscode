@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { getConnection } from '../db/pool';
+import { getConnection, recyclePool, setPoolOutputChannel } from '../db/pool';
 import { getProfile, readProfiles } from '../db/connections';
 import * as dao from '../db/utplsqlDao';
 import { SuiteInfoRow } from '../db/utplsqlDao';
@@ -14,6 +14,8 @@ import { runReporterExport } from './reporterProfile';
 import { getCachedVersion, clearVersionCache } from '../db/versionCache';
 import { createSingleFlightCache } from './singleFlight';
 import { createObjectTypeCache } from './objectTypeCache';
+import { forgetProfile as forgetProfileCaches } from './profileCaches';
+import { reconcileRoots } from './rootReconciliation';
 
 /**
  * Single-flighted per-profile cache of the full get_suites_info row set (see
@@ -65,6 +67,38 @@ function childrenIndexFor(profile: string, owner: string, forOwner: SuiteInfoRow
     const index = buildChildrenIndex(forOwner);
     childrenIndexCache.set(key, index);
     return index;
+}
+
+/** Drops every childrenIndexCache entry for `profile` (every owner under it — the cache key is `${profile}:${owner}`), leaving other profiles' entries untouched. */
+function clearChildrenIndexForProfile(profile: string): void {
+    const prefix = `${profile}:`;
+    for (const key of [...childrenIndexCache.keys()]) {
+        if (key.startsWith(prefix)) {
+            childrenIndexCache.delete(key);
+        }
+    }
+}
+
+/**
+ * Closes the pool and clears every per-profile cache for `name` in one
+ * place (issue #19) — see profileCaches.ts for why the caches are cleared
+ * before the pool, and why recyclePool rather than closePool. Exported for
+ * commands/index.ts's setPassword (the old pool otherwise keeps using the
+ * password that was just replaced) and removeConnection (otherwise the
+ * removed profile's Oracle sessions stay open), and used below by this
+ * module's own onDidChangeConfiguration('utplsql.connections') listener for
+ * a profile that disappears by any means, including a hand-edited
+ * settings.json.
+ */
+export async function forgetProfile(name: string): Promise<void> {
+    await forgetProfileCaches(name, {
+        clearSuiteRows: (p) => suiteRowsCache.clear(p),
+        clearObjectTypes: (p) => objectTypeCache.clear(p),
+        clearChildrenIndex: clearChildrenIndexForProfile,
+        clearVersion: clearVersionCache,
+        clearDbaView: dao.clearDbaViewCache,
+        closePool: recyclePool
+    });
 }
 
 function fetchSuiteRows(profile: string, onUnknownItemType: (raw: unknown) => void): Promise<SuiteInfoRow[]> {
@@ -303,6 +337,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
     const meta = new MetaStore();
     const output = vscode.window.createOutputChannel('utPLSQL');
     setPerfOutputChannel(output);
+    setPoolOutputChannel(output);
     const ctx: UtplsqlContext = { controller, meta, output, secrets: extCtx.secrets, sourceIndex };
 
     const reportResolveError = (item: vscode.TestItem, err: unknown): void => {
@@ -341,48 +376,57 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
                 return;
             }
             try {
+                const owners = new Set<string>();
+                const primary = (cfg.defaultSchema ?? cfg.user).toUpperCase();
+                // conn is only needed for the version round-trip and
+                // hasSuites() below — closed before fetchSuiteRows() runs
+                // rather than held open across it, since fetchSuiteRows opens
+                // a *second* connection of its own. Holding both at once used
+                // to mean a single root resolve checked out 2 connections
+                // simultaneously, saturating a poolMax: 2 pool by itself
+                // (issue #16) — any concurrent checkout (a sibling tree
+                // expand, a run) then queued behind this one root resolve
+                // alone.
                 const conn = await getConnection(cfg, extCtx.secrets);
                 try {
                     const version = await getCachedVersion(conn, parsed.profile);
                     item.description = version.raw;
-                    const owners = new Set<string>();
-                    const primary = (cfg.defaultSchema ?? cfg.user).toUpperCase();
                     if (await dao.hasSuites(conn, primary)) {
                         owners.add(primary);
                     }
-                    const rows = await fetchSuiteRows(parsed.profile, (raw) => logUnknownItemType(parsed.profile, raw));
-                    rows.forEach((r) => owners.add(r.objectOwner.toUpperCase()));
-                    if (owners.size === 0) {
-                        reportResolveError(
-                            item,
-                            new Error(
-                                `No utPLSQL suites found for '${parsed.profile}'. Is utPLSQL installed in schema '${primary}' and are any %suite packages compiled there?`
-                            )
-                        );
-                        return;
-                    }
-                    const expectedIds = new Set<string>();
-                    for (const owner of [...owners].sort()) {
-                        const id = schemaId(parsed.profile, owner);
-                        expectedIds.add(id);
-                        // Reuse an existing schema item rather than replacing it:
-                        // it may already carry a fully-resolved subtree with live
-                        // run state (see materializeLevel's merge for why a blind
-                        // rebuild here would orphan that).
-                        const schemaItem = item.children.get(id) ?? controller.createTestItem(id, owner);
-                        schemaItem.canResolveChildren = true;
-                        item.children.add(schemaItem);
-                    }
-                    const stale: string[] = [];
-                    item.children.forEach((child) => {
-                        if (!expectedIds.has(child.id)) {
-                            stale.push(child.id);
-                        }
-                    });
-                    stale.forEach((id) => item.children.delete(id));
                 } finally {
                     await conn.close();
                 }
+                const rows = await fetchSuiteRows(parsed.profile, (raw) => logUnknownItemType(parsed.profile, raw));
+                rows.forEach((r) => owners.add(r.objectOwner.toUpperCase()));
+                if (owners.size === 0) {
+                    reportResolveError(
+                        item,
+                        new Error(
+                            `No utPLSQL suites found for '${parsed.profile}'. Is utPLSQL installed in schema '${primary}' and are any %suite packages compiled there?`
+                        )
+                    );
+                    return;
+                }
+                const expectedIds = new Set<string>();
+                for (const owner of [...owners].sort()) {
+                    const id = schemaId(parsed.profile, owner);
+                    expectedIds.add(id);
+                    // Reuse an existing schema item rather than replacing it:
+                    // it may already carry a fully-resolved subtree with live
+                    // run state (see materializeLevel's merge for why a blind
+                    // rebuild here would orphan that).
+                    const schemaItem = item.children.get(id) ?? controller.createTestItem(id, owner);
+                    schemaItem.canResolveChildren = true;
+                    item.children.add(schemaItem);
+                }
+                const stale: string[] = [];
+                item.children.forEach((child) => {
+                    if (!expectedIds.has(child.id)) {
+                        stale.push(child.id);
+                    }
+                });
+                stale.forEach((id) => item.children.delete(id));
             } catch (err) {
                 reportResolveError(item, err);
             }
@@ -418,6 +462,43 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
         await controller.resolveHandler?.(undefined);
     };
 
+    /**
+     * The only place that watches `utplsql.connections` for changes (issue
+     * #19) — SourceIndex has the only other onDidChangeConfiguration
+     * listener in the codebase, for files.associations/
+     * utplsql.discovery.languageIds. Fires for a profile added or removed
+     * through the connection commands *and* for a hand-edited
+     * settings.json, since both go through the same
+     * vscode.workspace.getConfiguration('utplsql').update('connections', …)
+     * call (connections.ts's writeProfiles). reconcileRoots (pure, see
+     * rootReconciliation.ts) turns "current root ids" + "configured
+     * profiles" into exactly the ids to add/remove, so an unrelated
+     * profile's already-resolved subtree is left alone rather than being
+     * rebuilt from scratch the way refreshHandler's full wipe does.
+     */
+    const connectionsWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
+        if (!e.affectsConfiguration('utplsql.connections')) {
+            return;
+        }
+        const existingIds: string[] = [];
+        controller.items.forEach((root) => existingIds.push(root.id));
+        const { added, removed } = reconcileRoots(
+            existingIds,
+            readProfiles().map((p) => p.name)
+        );
+        removed.forEach((id) => {
+            const profile = parseId(id).profile;
+            controller.items.delete(id);
+            meta.deleteForProfile(profile);
+            void forgetProfile(profile);
+        });
+        added.forEach((id) => {
+            const root = controller.createTestItem(id, parseId(id).profile);
+            root.canResolveChildren = true;
+            controller.items.add(root);
+        });
+    });
+
     const runProfile = controller.createRunProfile(
         'Run',
         vscode.TestRunProfileKind.Run,
@@ -440,7 +521,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
         false
     );
 
-    extCtx.subscriptions.push(controller, output, runProfile, coverageProfile, reporterExportProfile);
+    extCtx.subscriptions.push(controller, output, connectionsWatcher, runProfile, coverageProfile, reporterExportProfile);
 
     return ctx;
 }

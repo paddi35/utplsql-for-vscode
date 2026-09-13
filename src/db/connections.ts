@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 
+export { validateProfileName } from './profileName';
+
 export interface ConnectionProfile {
     name: string;
     user: string;

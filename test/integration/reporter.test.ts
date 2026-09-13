@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { Connection } from 'oracledb';
 import { runWithReporter } from '../../src/db/reporterDao';
 import * as dao from '../../src/db/utplsqlDao';
+import { Candidate, candidateLabel } from '../../src/commands/resolveTarget';
 import { getTestPool, closeTestPool, TEST_OWNER } from './support/db';
 import { installFixture } from './support/fixture';
 
@@ -78,5 +79,28 @@ describe('reporter export against a real schema [integration]', function () {
         assert.match(output, /adds two numbers correctly/);
         assert.match(output, /test nested inside a suite context/);
         assert.doesNotMatch(output, /fails on purpose/);
+    });
+
+    it('accepts an OWNER:PACKAGE run path built the same way runWithReporter\'s QuickPick fallback would build one, and produces non-empty output (issue #29)', async () => {
+        // Reproduces suiteRowCandidates()'s mapping (commands/index.ts) --
+        // runWithReporter's QuickPick fallback candidate source for a
+        // workspace with no editor target at all -- against a live
+        // getSuitesInfo() result, then runs the exact `${owner}:${packageName}`
+        // string resolveAtCursor hands to runWithReporterDao once the user
+        // picks a candidate. No editor, no cursor, no local file anywhere in
+        // this path.
+        const rows = await dao.getSuitesInfo(producerConn, TEST_OWNER, 'test_calc_pkg');
+        const candidates: Candidate[] = rows.map((r) => ({
+            owner: r.objectOwner,
+            packageName: r.objectName,
+            procedureName: dao.isTestItem(r.itemType) ? r.itemName : undefined
+        }));
+        const packageLevel = candidates.find((c) => c.procedureName === undefined);
+        assert.ok(packageLevel, `expected at least one package-level (no procedureName) candidate, got ${JSON.stringify(candidates.map(candidateLabel))}`);
+
+        const runPath = `${packageLevel!.owner}:${packageLevel!.packageName}`;
+        const { output } = await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [runPath]);
+        assert.ok(output.length > 0, 'expected non-empty reporter output');
+        assert.match(output, /utplsql-vsc integration fixture/);
     });
 });

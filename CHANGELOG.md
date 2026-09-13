@@ -97,6 +97,40 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
   well over a thousand sequential connection checkouts against a pool sized for as few as two
   connections before the first test even started. Object types are now cached and primed once per
   connection profile and schema instead of once per tree level.
+- Building **Run with Coverage**'s scope queried `*_dependencies` once per selected `TestItem`
+  instead of once per package — since a coverage run selects every path-bearing suite/context/test
+  row, not just leaves, the same package's dependencies were queried once per row belonging to it.
+  On the documented 1000-package fixture that was on the order of 16,000 sequential round trips
+  before a single test started running. Dependency lookups are now batched into one query per
+  schema instead of per package.
+- `utplsql.runWithTags` built its tag list only from Test Explorer nodes that had already been
+  materialized, so a suite the user never individually expanded contributed no tags even though its
+  `--%tags(...)` annotations exist — the common path (expand the connection root, immediately run
+  "Run Tests with Tag") usually produced an empty list and a "no annotations found" error that was
+  simply wrong. Tags are now read from the full discovery row set instead, complete regardless of
+  what has been expanded; the tag QuickPick also now shows each tag's carrying-test count.
+- `utplsql.runTestAtCursor`, `utplsql.runWithReporter` and `utplsql.generateTest` required an open
+  editor holding a local PL/SQL file, making all three dead commands in a workspace with no local
+  source at all — the database-as-sole-source-of-truth setup this extension is built to support.
+  They now also resolve a `utplsql-source://` virtual document at the cursor, and, failing that,
+  fall back to a QuickPick listing the database objects available for the chosen connection
+  profile.
+- `utplsql.setPassword` stored the new secret but left the profile's connection pool cached with
+  the old password, so every subsequent query kept failing with `ORA-01017` until the window was
+  reloaded even though the stored password was already correct; `utplsql.removeConnection` rewrote
+  settings and deleted the secret but never closed the pool, leaving the removed profile's Oracle
+  sessions open for the rest of the window. Both commands now close the pool and clear every
+  per-profile cache. The Test Explorer also now reconciles its root nodes live off
+  `utplsql.connections`, so adding or removing a profile — via either command, or by hand-editing
+  `settings.json` — updates the tree immediately instead of needing "Refresh Tests" or a window
+  reload.
+- `utplsql.addConnection` wrote the new profile to settings before prompting for its password, so
+  cancelling the password prompt left a persisted, unusable profile behind; a duplicate profile
+  name surfaced as VS Code's generic "command failed" notification instead of a clear error. The
+  profile name and default schema are now validated as you type — an empty name, one containing `/`
+  or `:` (both break `TestItem` id parsing), or a name that already exists are all rejected before
+  the password prompt is ever shown — every answer is gathered before anything is persisted, and a
+  duplicate name now shows an actual error message instead of a generic failure.
 - The pre-run `run paths for '<profile>' = …` log line (embedding every selected `TestItem` id)
   and the `produce SQL: …` log line (embedding the entire generated PL/SQL block) were written to
   the `utPLSQL` output channel unconditionally on every run, instead of being gated behind

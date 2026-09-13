@@ -49,7 +49,7 @@ export class VirtualSourceProvider implements vscode.TextDocumentContentProvider
         if (!cfg) {
             return `-- utPLSQL: unknown connection profile '${parsed.profile}'`;
         }
-        const pool = await getPool(cfg, this.secrets, 0);
+        const pool = await getPool(cfg, this.secrets);
         const conn = await pool.getConnection();
         try {
             const type = parsed.isBody ? 'PACKAGE BODY' : 'PACKAGE';

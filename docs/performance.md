@@ -186,7 +186,8 @@ hotspots below:
 ## Known hotspots
 
 Reading `src/testing/*` and `src/db/*` while building this fixture surfaced
-four concrete performance concerns. Two are now fixed, two remain:
+four concrete performance concerns, plus a fifth found afterward in the
+coverage path below. Four are now fixed, one remains:
 
 1. ~~**`dedupPathList` (`src/testing/ids.ts`) was O(n²)**~~ Fixed:
    `unique.filter(c => unique.some(isCoveredBy))` rescanned the whole
@@ -213,6 +214,15 @@ four concrete performance concerns. Two are now fixed, two remain:
    replaced `buildSchemaTree` (see Findings above) doesn't sort at all —
    each level's rows come straight out of the children-index built once per
    owner.
+5. ~~**`buildCoverageOptions` queried `*_dependencies` once per selected
+   `TestItem`**~~ Fixed: coverage scope selects every path-bearing
+   suite/context/test row into its candidate list, the same property that
+   made item 1 above O(n²), so building **Run with Coverage**'s scope
+   repeated the same package's dependency query once per row belonging to
+   it — on the order of 16,000 sequential round trips on the documented
+   1000-package fixture before a single test started running.
+   `computeCoverageScope` (`src/testing/coverageScope.ts`) now batches these
+   into one query per schema instead of one per `TestItem`.
 
 ## Open follow-ups
 
@@ -220,6 +230,12 @@ four concrete performance concerns. Two are now fixed, two remain:
   the manual checklist above) — `test/e2e/testExplorer.e2e.test.ts` now
   covers the lazy-materialization/run-resolution fix, tag-scoped (`a_tags`)
   runs leaving untagged tests addressable, and cancellation leaving the
-  pool/tree usable for a subsequent run. Coverage runs (`runCoverage`) are
-  still open.
+  pool/tree usable for a subsequent run. `test/e2e/support/coverageCases.ts`
+  now covers `runCoverage` end to end — local-file and virtual-source
+  `FileCoverage`/`StatementCoverage`, cancellation, the Cobertura reporter,
+  the HTML report's file-instead-of-webview behaviour including an
+  XSS-payload passthrough, and the cross-profile `dba_`/`all_` cache
+  ordering. `test/e2e/support/discoveryCachingCases.ts` covers the
+  single-flight discovery query, the per-owner object-type priming, and
+  `UT_LOGICAL_SUITE` grouping.
 - Item 2 above (one round-trip per streamed event) is accepted, not open.

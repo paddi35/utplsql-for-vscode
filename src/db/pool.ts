@@ -1,6 +1,6 @@
 import oracledb from 'oracledb';
 import { ConnectionProfile, getPassword } from './connections';
-import { resolveTnsAdminDir } from './tnsnames';
+import { resolveTnsAdminDirWithSource } from './tnsnames';
 import * as vscode from 'vscode';
 
 // node-oracledb defaults to Thin mode as long as initOracleClient() is never
@@ -19,7 +19,14 @@ const pools = new Map<string, oracledb.Pool>();
  */
 const SCHEMA_NAME_RE = /^[A-Za-z][A-Za-z0-9_$#]*$/;
 
-function validateSchemaName(schema: string): string {
+/**
+ * Exported so commands/index.ts's addConnection wizard (issue #25) can
+ * surface this same validation at entry — when defaultSchema is typed, and
+ * again defensively before persisting — instead of it firing for the first
+ * time much later, at pool-creation time, after the profile is already
+ * saved.
+ */
+export function validateSchemaName(schema: string): string {
     if (!SCHEMA_NAME_RE.test(schema)) {
         throw new Error(
             `utPLSQL: invalid defaultSchema '${schema}' — expected an unquoted Oracle identifier ([A-Za-z][A-Za-z0-9_$#]*).`
@@ -28,14 +35,126 @@ function validateSchemaName(schema: string): string {
     return schema;
 }
 
-/** Two sessions per run are mandatory: one produces, one consumes. */
-const BASE_POOL_MAX = 2;
+/**
+ * Every checkout this extension can plausibly want at once against a single
+ * connection profile, sized for the worst case rather than the common case
+ * (issue #16):
+ *   - two concurrent "Run"s against the same profile — the Test Explorer
+ *     lets a second run start before the first finishes — at one producer +
+ *     one consumer connection each = 4;
+ *   - +1 for a resolveHandler call (expanding a tree node) or an "Export
+ *     with Reporter" probe landing in the same window;
+ *   - +1 headroom for a second such probe/resolve arriving before the first
+ *     lets go.
+ * = 6. Because poolMin is 0, node-oracledb only opens physical connections
+ * as checkouts actually demand them — a single plain "Run" still opens
+ * exactly 2, never 6 — so sizing for the worst case here costs nothing when
+ * the pool is used lightly.
+ *
+ * This constant replaces what used to be BASE_POOL_MAX (2) plus a per-call
+ * `extraReporters` argument (0 or 1) added on top of it. That only worked
+ * when the call happened to be the one that *created* the pool: every later
+ * getPool() call for the same profile got the cached pool straight back,
+ * silently discarding whatever extraReporters it asked for, so the
+ * effective poolMax for a profile was pinned by whichever caller ran first —
+ * most commonly a plain run (extraReporters 0), giving poolMax 2, exactly
+ * the number a single run itself consumes. Any concurrent checkout then sat
+ * in node-oracledb's queue until its 60s default queueTimeout fired
+ * NJS-040.
+ *
+ * Of the two sizing options the issue lists, this is option 1 (a single
+ * worst-case constant) rather than option 2 (keep a per-call ceiling and
+ * grow a cached pool towards it via pool.reconfigure({ poolMax })). Option 2
+ * still needs a worst-case ceiling to grow towards — every caller would have
+ * to agree on the same number this constant already is — and adds a
+ * reconfigure race against whichever checkouts are in flight while it runs,
+ * for no benefit over simply starting there. Option 1 is also what the issue
+ * calls "the smallest, most predictable change".
+ */
+const POOL_MAX = 6;
 
-export async function getPool(
-    profile: ConnectionProfile,
-    secrets: vscode.SecretStorage,
-    extraReporters = 1
-): Promise<oracledb.Pool> {
+/**
+ * node-oracledb defaults queueTimeout to 60000ms. With POOL_MAX sized for
+ * the worst case above, a checkout should essentially never need to queue
+ * during normal use, so a shorter timeout is not "give up on legitimate
+ * contention too soon" — it is "fail fast and say why" once something has
+ * genuinely exhausted the pool (a runaway ut_runner.run that never returns,
+ * or a future bug that leaks a connection instead of closing it). 15s is
+ * long enough to ride out several resolveHandler/export probes landing in
+ * the same instant, short enough that a stuck checkout turns into the
+ * describeConnectionError() message below well short of a full minute.
+ */
+const QUEUE_TIMEOUT_MS = 15_000;
+
+/**
+ * node-oracledb's error code for "connection request timeout" — see
+ * node_modules/oracledb/lib/errors.js's ERR_CONN_REQUEST_TIMEOUT — raised
+ * when a pool.getConnection() checkout waits longer than queueTimeout.
+ * errors.js's getErr() sets `.code` on every driver error it constructs, so
+ * this is checked directly instead of pattern-matching `.message`.
+ */
+const POOL_TIMEOUT_ERROR_CODE = 'NJS-040';
+
+function hasErrorCode(err: unknown, code: string): boolean {
+    return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === code;
+}
+
+/**
+ * Turns a pool.getConnection() rejection into a message a user can act on.
+ * A bare NJS-040 ("connection request timeout...") reads as a database or
+ * network problem, when it is actually this extension's own pool being
+ * fully checked out by other in-flight work against the same profile (a
+ * concurrent run, a coverage build, a tree resolve, an export) for longer
+ * than queueTimeout. Every other error is passed through as String(err)
+ * unchanged, exactly as every getConnection() call site already did before
+ * this — an ORA- error from a broken connect string, say, is already clear
+ * enough on its own.
+ */
+export function describeConnectionError(err: unknown, profileName: string): string {
+    if (hasErrorCode(err, POOL_TIMEOUT_ERROR_CODE)) {
+        return (
+            `utPLSQL: no free connection for '${profileName}' (pool max ${POOL_MAX}) — a run, coverage build, ` +
+            'tree resolve, or export is already using all of them. Wait for it to finish, then try again.'
+        );
+    }
+    return String(err);
+}
+
+let outputRef: vscode.OutputChannel | undefined;
+/**
+ * Wired up once from controller.ts's own output channel (same pattern as
+ * perf.ts's setPerfOutputChannel), so pool creation logs a line alongside
+ * the rest of the utPLSQL log instead of getPool() creating its own
+ * duplicate output channel.
+ */
+export function setPoolOutputChannel(output: vscode.OutputChannel): void {
+    outputRef = output;
+}
+
+const TNS_ADMIN_SOURCE_LABEL: Record<'own' | 'sqldeveloper' | 'env' | 'none', string> = {
+    own: 'the utplsql.connections.tnsAdminPath setting',
+    sqldeveloper: "the SQL Developer for VSCode extension's tnsConfiguration.path setting",
+    env: 'the TNS_ADMIN environment variable',
+    none: 'none'
+};
+
+/**
+ * Resolves the TNS_ADMIN directory for a new pool and logs which of
+ * pickTnsAdminDir()'s three sources won — issue #12 added
+ * resolveTnsAdminDirWithSource() for exactly this logging but left it
+ * unwired here, since pool.ts was out of scope for that fix.
+ */
+function resolveAndLogTnsAdminDir(profileName: string): string | undefined {
+    const { dir, source } = resolveTnsAdminDirWithSource();
+    if (dir) {
+        outputRef?.appendLine(`utPLSQL: pool for '${profileName}' — using tnsnames.ora directory '${dir}' (from ${TNS_ADMIN_SOURCE_LABEL[source]}).`);
+    } else {
+        outputRef?.appendLine(`utPLSQL: pool for '${profileName}' — no tnsnames.ora directory configured (own setting / SQL Developer / TNS_ADMIN all unset).`);
+    }
+    return dir;
+}
+
+export async function getPool(profile: ConnectionProfile, secrets: vscode.SecretStorage): Promise<oracledb.Pool> {
     const existing = pools.get(profile.name);
     if (existing) {
         return existing;
@@ -44,16 +163,17 @@ export async function getPool(
     if (!password) {
         throw new Error(`No password stored for connection '${profile.name}'. Run "utPLSQL: Set Password for Connection" first.`);
     }
-    const configDir = resolveTnsAdminDir();
+    const configDir = resolveAndLogTnsAdminDir(profile.name);
     const schema = profile.defaultSchema ? validateSchemaName(profile.defaultSchema) : undefined;
     const pool = await oracledb.createPool({
         user: profile.user,
         password,
         connectString: profile.connectString,
         poolMin: 0,
-        poolMax: BASE_POOL_MAX + extraReporters,
+        poolMax: POOL_MAX,
         poolIncrement: 1,
         poolAlias: profile.name,
+        queueTimeout: QUEUE_TIMEOUT_MS,
         // Runs for every newly created session in this pool, so the profile's
         // schema applies to every checkout — including the call sites that
         // take pool.getConnection() directly instead of going through
