@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { Connection } from 'oracledb';
 import { getTestPool, closeTestPool, TEST_OWNER } from './support/db';
-import { installFixture, installDeepTagsFixture, DEEP_TAGS_FIXTURE_OWNER_OBJECT, DEEP_TAGS_TAG, DEEP_TAGS_TAGGED_TEST, DEEP_TAGS_UNTAGGED_TEST } from './support/fixture';
+import { installFixture, installDeepTagsFixture, DEEP_TAGS_SUITE_PATH, DEEP_TAGS_TAG, DEEP_TAGS_TAGGED_TEST, DEEP_TAGS_UNTAGGED_TEST } from './support/fixture';
 import { runPathsAndCollect } from './support/runProfile';
 
 /**
@@ -53,7 +53,14 @@ describe('a_tags and a_random_test_order against a real schema [integration]', f
         // what any IDE has materialized), so this is really confirming the
         // DB side already behaves as expected once the *tag list* is fixed
         // to actually offer 'deep_only' in the first place.
-        const { events } = await runPathsAndCollect(producerConn, consumerConn, [`${TEST_OWNER}:${DEEP_TAGS_FIXTURE_OWNER_OBJECT}`], {
+        //
+        // The run path is the suite path, not the package name: a package
+        // carrying --%suitepath(deep.tags.group) is addressable only as
+        // deep.tags.group.test_deep_tags_pkg. Naming the bare package
+        // raises ORA-20204 ("No suite packages found for path ...") --
+        // confirmed against utPLSQL 3.2.3, and consistent with what
+        // get_suites_info reports as the row's path.
+        const { events } = await runPathsAndCollect(producerConn, consumerConn, [`${TEST_OWNER}:${DEEP_TAGS_SUITE_PATH}`], {
             tags: [DEEP_TAGS_TAG]
         });
         const preRun = events.find((e) => e.event.type === 'pre-run');

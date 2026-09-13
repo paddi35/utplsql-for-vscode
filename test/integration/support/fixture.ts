@@ -19,6 +19,8 @@ export const FIXTURE_OWNER_OBJECT = 'TEST_CALC_PKG';
 
 /** test_suitepath_pkg's --%suitepath(...) group and object name (see fixture.sql) — issue #27's UT_LOGICAL_SUITE regression. */
 export const SUITEPATH_GROUP_PATH = 'a.b.c';
+/** Where utPLSQL actually reports test_suitepath_pkg: the group path with the package as its own trailing segment. */
+export const SUITEPATH_SUITE_PATH = `${SUITEPATH_GROUP_PATH}.test_suitepath_pkg`;
 export const SUITEPATH_FIXTURE_OBJECT = 'TEST_SUITEPATH_PKG';
 
 export async function installFixture(conn: Connection): Promise<void> {
@@ -64,6 +66,13 @@ export async function installXssFixture(conn: Connection): Promise<void> {
  */
 export const DEEP_TAGS_FIXTURE_OWNER_OBJECT = 'TEST_DEEP_TAGS_PKG';
 export const DEEP_TAGS_SUITEPATH_GROUP_PATH = 'deep.tags.group';
+/**
+ * How ut_runner.run must be asked for this package. A --%suitepath'd
+ * package is not addressable by its own name -- utPLSQL reports it at
+ * <group>.<package>, and a_paths naming just the package raises
+ * ORA-20204.
+ */
+export const DEEP_TAGS_SUITE_PATH = `${DEEP_TAGS_SUITEPATH_GROUP_PATH}.test_deep_tags_pkg`;
 export const DEEP_TAGS_TAG = 'deep_only';
 export const DEEP_TAGS_TAGGED_TEST = 'TEST_DEEP_TAGGED';
 export const DEEP_TAGS_UNTAGGED_TEST = 'TEST_DEEP_UNTAGGED';

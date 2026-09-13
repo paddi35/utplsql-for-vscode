@@ -2,17 +2,16 @@ import assert from 'node:assert/strict';
 import oracledb from 'oracledb';
 import { installModuleStub, uncacheAllSrcModules } from '../unit/support/moduleStub';
 import { createFakeVscode, createFakeSecretStorage } from '../unit/support/fakeVscode';
-import { TEST_USER, TEST_OWNER, TEST_CONNECT_STRING, getTestPool, closeTestPool } from './support/db';
+import { TEST_USER, TEST_OWNER, TEST_CONNECT_STRING, getTestPool, closeTestPool, canReadSessionView } from './support/db';
 import { installFixture } from './support/fixture';
 import { runPathsAndCollect } from './support/runProfile';
 import * as dao from '../../src/db/utplsqlDao';
 
 /**
- * Issue #19, symptoms 1 and 2, against a real Oracle instance — UNEXECUTED
- * in this environment (no Oracle database available; see this repo's
- * docker-compose fixture / docs for how to stand one up). Written and
- * typechecked so it documents the exact regression and is ready to run
- * wherever test/integration already runs against a live database.
+ * Issue #19, symptoms 1 and 2, against a real Oracle instance. Run against
+ * the docker-compose fixture in this repo; symptom 2 needs SELECT on
+ * v$session, which that fixture grants (init-scripts/15-grant-session-view.sh)
+ * and which the test skips itself over where it is missing.
  *
  * pool.ts imports 'vscode', so it needs the same fake-module technique
  * test/unit/pool.test.ts uses (see support/moduleStub.ts) rather than the
@@ -41,7 +40,7 @@ function loadPool(): { pool: PoolModule; uninstall(): void } {
 const REAL_PASSWORD = process.env.UTPLSQL_IT_PASSWORD ?? 'oracle';
 const WRONG_PASSWORD = `${REAL_PASSWORD}-definitely-wrong`;
 
-describe('pool against a real Oracle instance [integration, unexecuted here — no DB available]', function () {
+describe('pool against a real Oracle instance [integration]', function () {
     this.timeout(30000);
 
     it('symptom 1: fixing a wrong password only takes effect after the pool is invalidated, not before', async () => {
@@ -73,7 +72,7 @@ describe('pool against a real Oracle instance [integration, unexecuted here — 
         }
     });
 
-    it('symptom 2: closePool ends the profile\'s open Oracle sessions instead of leaving them running', async () => {
+    it('symptom 2: closePool ends the profile\'s open Oracle sessions instead of leaving them running', async function () {
         const { pool, uninstall } = loadPool();
         try {
             const profileName = 'it-session-lifecycle';
@@ -82,9 +81,14 @@ describe('pool against a real Oracle instance [integration, unexecuted here — 
 
             const p = await pool.getPool(profile, secrets);
             const conn = await p.getConnection();
+            if (!(await canReadSessionView(conn))) {
+                // No v$session grant here -- see canReadSessionView().
+                await conn.close();
+                this.skip();
+            }
             const before = await conn.execute<{ CNT: number }>(
-                `SELECT COUNT(*) AS cnt FROM v$session WHERE username = UPPER(:user)`,
-                { user: TEST_USER }
+                `SELECT COUNT(*) AS cnt FROM v$session WHERE username = UPPER(:owner)`,
+                { owner: TEST_USER }
             );
             assert.ok((before.rows?.[0]?.CNT ?? 0) > 0, 'expected at least this checked-out session to be visible in v$session');
             await conn.close();
@@ -100,23 +104,23 @@ describe('pool against a real Oracle instance [integration, unexecuted here — 
             const observerConn = await observerPool.getConnection();
             try {
                 const after = await observerConn.execute<{ CNT: number }>(
-                    `SELECT COUNT(*) AS cnt FROM v$session WHERE username = UPPER(:user) AND module LIKE '%it-session-lifecycle%'`,
-                    { user: TEST_USER }
+                    `SELECT COUNT(*) AS cnt FROM v$session WHERE username = UPPER(:owner) AND module LIKE '%it-session-lifecycle%'`,
+                    { owner: TEST_USER }
                 );
                 assert.equal(after.rows?.[0]?.CNT ?? 0, 0, "expected the closed pool's sessions to be gone from v$session");
             } finally {
                 await observerConn.close();
-                await pool.closePool('it-session-lifecycle-observer');
             }
         } finally {
+            await pool.closePool('it-session-lifecycle');
+            await pool.closePool('it-session-lifecycle-observer');
             uninstall();
         }
     });
 });
 
 /**
- * Issue #16's own test cases, against a real Oracle instance — UNEXECUTED in
- * this environment (no Oracle database available). Uses support/db.ts's raw
+ * Issue #16's own test cases, against a real Oracle instance. Uses support/db.ts's raw
  * pool rather than src/db/pool.ts's getPool() for the same reason
  * cancel.test.ts and streaming.test.ts do (support/db.ts's own doc comment):
  * these tests exercise pool *sizing/contention* behaviour that is identical
@@ -126,7 +130,7 @@ describe('pool against a real Oracle instance [integration, unexecuted here — 
  * introduces) — and staying on the raw pool avoids the vscode module-stub
  * dance for tests that would otherwise gain nothing from it.
  */
-describe('pool sizing under concurrency, real Oracle instance [integration, unexecuted here — no DB available]', function () {
+describe('pool sizing under concurrency, real Oracle instance [integration]', function () {
     this.timeout(60000);
 
     afterEach(async () => {

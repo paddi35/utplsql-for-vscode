@@ -9,6 +9,7 @@ import {
     installFixture,
     FIXTURE_OWNER_OBJECT,
     SUITEPATH_GROUP_PATH,
+    SUITEPATH_SUITE_PATH,
     SUITEPATH_FIXTURE_OBJECT,
     installDeepTagsFixture,
     DEEP_TAGS_FIXTURE_OWNER_OBJECT,
@@ -98,7 +99,14 @@ describe('utplsqlDao discovery against a real schema [integration]', function ()
             'UT_LOGICAL_SUITE',
             'pins the docs/performance.md Findings observation — a utPLSQL version change that alters this should fail loudly here'
         );
-        assert.ok(rows.some((r) => r.itemType === 'UT_TEST' && r.path === `${SUITEPATH_GROUP_PATH}.test_in_group`));
+        // The package itself is a path segment between the group and the
+        // test: utPLSQL reports a --%suitepath'd package at
+        // <group>.<package>, so the test below it is at
+        // <group>.<package>.<test>, never <group>.<test>.
+        assert.ok(
+            rows.some((r) => r.itemType === 'UT_TEST' && r.path === `${SUITEPATH_SUITE_PATH}.test_in_group`),
+            `expected the test at path '${SUITEPATH_SUITE_PATH}.test_in_group', got ${JSON.stringify(rows.map((r) => r.path))}`
+        );
     });
 
     it('never reports an unrecognised item_type against the live utPLSQL version under test (cheap guard against a future 5th kind)', async () => {
