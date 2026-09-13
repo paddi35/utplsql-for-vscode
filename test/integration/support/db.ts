@@ -23,15 +23,18 @@ export const TEST_CONNECT_STRING = process.env.UTPLSQL_IT_CONNECT_STRING ?? 'loc
 /**
  * A second, deliberately unprivileged user (no SELECT ANY DICTIONARY / DBA
  * role) for the dba_/all_ view-prefix cross-profile regression in
- * dbaView.test.ts (issue #15). Unset by default: the docker-compose fixture
- * this suite normally runs against (docker/oracle-utplsql) provisions only
- * the one utPLSQL-owning schema, and adding a second user there is an
- * init-scripts change outside this test suite's scope. Set both env vars to
- * exercise the two-user regression locally/in CI once such a user exists;
- * tests that need it skip themselves via `this.skip()` when it doesn't.
+ * dbaView.test.ts (issue #15): the bug is only reproducible with two
+ * connections that see the data dictionary differently.
+ *
+ * The defaults match what the docker fixture provisions (see
+ * docker/oracle-utplsql/init-scripts/16-create-unprivileged-user.sh), so the
+ * regression runs out of the box there. Against any other database the user
+ * will simply not exist, and getUnprivilegedTestConnection() reports that as
+ * "not configured" rather than failing the suite -- the tests needing it skip
+ * themselves. Override both env vars to point at a different pair.
  */
-export const UNPRIV_TEST_USER = process.env.UTPLSQL_IT_UNPRIV_USER;
-const UNPRIV_TEST_PASSWORD = process.env.UTPLSQL_IT_UNPRIV_PASSWORD;
+export const UNPRIV_TEST_USER = process.env.UTPLSQL_IT_UNPRIV_USER ?? 'utplsql_vsc_unpriv';
+const UNPRIV_TEST_PASSWORD = process.env.UTPLSQL_IT_UNPRIV_PASSWORD ?? TEST_PASSWORD;
 
 let pool: oracledb.Pool | undefined;
 
@@ -73,7 +76,16 @@ export async function closeTestPool(): Promise<void> {
 
 let unprivPool: oracledb.Pool | undefined;
 
-/** Undefined unless UTPLSQL_IT_UNPRIV_USER/UTPLSQL_IT_UNPRIV_PASSWORD are set — see that pair's doc comment above. */
+/**
+ * The unprivileged connection, or undefined when this database has no such
+ * user -- see UNPRIV_TEST_USER's doc comment above.
+ *
+ * poolMin: 0 means createPool() does not authenticate; a missing or
+ * differently-named user only surfaces as ORA-01017 on the first checkout,
+ * which is what is translated into "not configured" here. Any other error
+ * is a real problem with a database that does have the user, and is
+ * rethrown.
+ */
 export async function getUnprivilegedTestConnection(): Promise<oracledb.Connection | undefined> {
     if (!UNPRIV_TEST_USER || !UNPRIV_TEST_PASSWORD) {
         return undefined;
@@ -88,7 +100,15 @@ export async function getUnprivilegedTestConnection(): Promise<oracledb.Connecti
             poolIncrement: 1
         });
     }
-    return unprivPool.getConnection();
+    try {
+        return await unprivPool.getConnection();
+    } catch (err) {
+        if (String(err).includes('ORA-01017')) {
+            await closeUnprivilegedTestPool();
+            return undefined;
+        }
+        throw err;
+    }
 }
 
 /**
