@@ -39,7 +39,7 @@ describe('realtime event streaming is live, not bundled [integration]', function
         const postSlow = events.find((e) => e.event.type === 'post-test' && (e.event as { id: string }).id === 'test_calc_pkg.test_slow');
         assert.ok(preSlow && postSlow);
 
-        const gapMs = postSlow!.elapsedMs - preSlow!.elapsedMs;
+        const gapMs: number = postSlow!.elapsedMs - preSlow!.elapsedMs;
         assert.ok(gapMs >= 1800, `expected the post-test event for test_slow to arrive ~2s after its pre-test event, got a ${gapMs}ms gap`);
 
         // If events were bundled at the end instead of streamed, every event
@@ -63,7 +63,7 @@ describe('realtime event streaming is live, not bundled [integration]', function
         // cursor delivered everything at the end, these would arrive
         // alongside postSlow, not ~2s before it.
         for (const e of fastTestEvents) {
-            const leadMs = postSlow!.elapsedMs - e.elapsedMs;
+            const leadMs: number = postSlow!.elapsedMs - e.elapsedMs;
             assert.ok(
                 leadMs >= 1800,
                 `expected ${(e.event as { id: string }).id} to have finished ~2s before test_slow did, got a ${leadMs}ms lead (elapsedMs=${e.elapsedMs}, post-test.test_slow=${postSlow!.elapsedMs})`
