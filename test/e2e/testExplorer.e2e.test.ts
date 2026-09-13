@@ -4,11 +4,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { getTestPool, closeTestPool } from '../integration/support/db';
-import { installFixture } from '../integration/support/fixture';
+import { installFixture, installXssFixture } from '../integration/support/fixture';
 import { ExtensionApi } from '../../src/extension';
 import { UtplsqlContext } from '../../src/testing/model';
 import { runTests as runControllerTests } from '../../src/testing/runHandler';
 import { buildSourceIndexWatcherCases } from './support/sourceIndexCases';
+import { buildCoverageCases } from './support/coverageCases';
+import { buildDiscoveryCachingCases } from './support/discoveryCachingCases';
 
 const EXTENSION_ID = 'paddi35.utplsql-for-vscode';
 const PROFILE_NAME = 'e2e-test';
@@ -413,16 +415,27 @@ async function testWorkspacePerfSettingsAreIgnored(ctx: UtplsqlContext, schema: 
  * an untraced run's output-channel footprint stays small, (issue #12) that
  * a workspace-scoped SQL Developer TNS path cannot redirect a credentialed
  * connection, (issue #11) that a workspace cannot turn on or redirect perf
- * instrumentation via its own .vscode/settings.json, and (issues #20/#26,
- * via support/sourceIndexCases.ts) SourceIndex's per-URI debounce and its
- * FileSystemWatcher; see docs/performance.md's Findings/Open
- * follow-ups.
+ * instrumentation via its own .vscode/settings.json, (issue #28, via
+ * support/coverageCases.ts) the runCoverage profile end to end — local-file
+ * and virtual-source FileCoverage/StatementCoverage, cancellation, the
+ * Cobertura reporter, the HTML report's file-instead-of-webview behaviour
+ * (issue #13) including an XSS-payload passthrough case, and (issue #15)
+ * cross-profile dba_/all_ cache ordering — (issues #17/#22/#27, via
+ * support/discoveryCachingCases.ts) single-flighted suite-row discovery,
+ * per-owner object-type cache priming, and the UT_LOGICAL_SUITE suitepath
+ * grouping node, and (issues #20/#26, via support/sourceIndexCases.ts)
+ * SourceIndex's per-URI debounce and its FileSystemWatcher; see
+ * docs/performance.md's Findings/Open follow-ups.
  */
 export async function run(): Promise<void> {
     const pool = await getTestPool();
     const setupConn = await pool.getConnection();
     try {
         await installFixture(setupConn);
+        // Coverage's HTML-report XSS case (coverageCases.ts) needs
+        // test_xss_pkg discoverable from the very first schema resolve
+        // below, the same as installFixture's own packages.
+        await installXssFixture(setupConn);
     } finally {
         await setupConn.close();
     }
@@ -462,11 +475,15 @@ export async function run(): Promise<void> {
 
         // Order matters: the tag-scoped case needs `pkg` to still be
         // unexpanded (0 children) when it starts, so it must run first —
-        // see its own doc comment. The remaining cases don't depend on
-        // pkg's starting state. The sourceIndexCases.ts cases are appended
+        // see its own doc comment. The coverage and discovery-caching
+        // groups don't depend on pkg's starting state, but the
+        // discovery-caching group (issue #22) does depend on test_calc_pkg
+        // still having no local workspace file, so both new groups must
+        // come before the sourceIndexCases.ts cases, which are appended
         // last because their final case deletes test_calc_pkg.pkb from
         // disk (see that file's own doc comment for why they, in turn, must
         // run in the order they're built in).
+        const connInfo = { user, password, connectString, owner };
         const cases: Array<[string, () => Promise<void>]> = [
             ['a tag-scoped run resolves an unexpanded package', () => testTagScopedRunResolvesAnUnexpandedPackage(ctx, pkg!)],
             ['running a package attaches results to every test and survives re-resolution', () => testPackageAttachesResultsAndSurvivesReResolution(ctx, pkg!)],
@@ -477,6 +494,8 @@ export async function run(): Promise<void> {
                 () => testWorkspaceScopedSqlDeveloperTnsPathIsIgnored(ctx, user, password, owner)
             ],
             ['a workspace-supplied utplsql.perf.* setting is ignored (scope: machine)', () => testWorkspacePerfSettingsAreIgnored(ctx, schema!)],
+            ...buildCoverageCases(ctx, schema!, pkg!, workspaceUri!, connInfo, PACKAGE_LABEL),
+            ...buildDiscoveryCachingCases(ctx, schema!, connInfo, PACKAGE_LABEL),
             ...buildSourceIndexWatcherCases(ctx, pkg!, workspaceUri!)
         ];
 
