@@ -231,7 +231,7 @@ function logUnknownItemType(ctx: UtplsqlContext, profile: string, raw: unknown):
  * so there is something to choose from before an editor target exists.
  */
 async function testableCandidates(ctx: UtplsqlContext, cfg: ConnectionProfile): Promise<Candidate[]> {
-    const pool = await getPool(cfg, ctx.secrets, 0);
+    const pool = await getPool(cfg, ctx.secrets);
     const conn = await pool.getConnection();
     try {
         const owner = (cfg.defaultSchema ?? cfg.user).toUpperCase();
@@ -476,7 +476,7 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
                 owners.add((cfg.defaultSchema ?? cfg.user).toUpperCase());
             }
 
-            const pool = await getPool(cfg, extCtx.secrets, 0);
+            const pool = await getPool(cfg, extCtx.secrets);
             const conn = await pool.getConnection();
             try {
                 for (const owner of owners) {
@@ -503,7 +503,7 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             if (!cfg) {
                 return;
             }
-            const pool = await getPool(cfg, extCtx.secrets, 1);
+            const pool = await getPool(cfg, extCtx.secrets);
             const probeConn = await pool.getConnection();
             let reporters;
             try {
@@ -590,7 +590,7 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             if (!cfg) {
                 return;
             }
-            const pool = await getPool(cfg, extCtx.secrets, 0);
+            const pool = await getPool(cfg, extCtx.secrets);
             const conn = await pool.getConnection();
             let units;
             try {

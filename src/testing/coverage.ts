@@ -209,7 +209,7 @@ async function buildCoverageOptions(ctx: UtplsqlContext, profile: string, items:
         return undefined;
     }
     const coverageCfg = vscode.workspace.getConfiguration('utplsql.coverage');
-    const pool = await getPool(cfg, ctx.secrets, 1);
+    const pool = await getPool(cfg, ctx.secrets);
     const scopeConn = await pool.getConnection();
     try {
         return await measure(

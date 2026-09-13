@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { Connection } from 'oracledb';
 import { getProfile } from '../db/connections';
-import { getPool, recyclePool } from '../db/pool';
+import { getPool, recyclePool, describeConnectionError } from '../db/pool';
 import * as dao from '../db/utplsqlDao';
 import { runWithReporter } from '../db/reporterDao';
 import { UtplsqlContext } from './model';
@@ -44,7 +44,7 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
             if (!cfg) {
                 continue;
             }
-            const pool = await getPool(cfg, ctx.secrets, 1);
+            const pool = await getPool(cfg, ctx.secrets);
             const probeConn = await pool.getConnection();
             try {
                 const reporters = await dao.getReportersList(probeConn);
@@ -88,19 +88,19 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
                 group.items.forEach((i) => run.errored(i, new vscode.TestMessage(`Unknown connection profile '${profile}'`)));
                 continue;
             }
-            const pool = await getPool(cfg, ctx.secrets, 1);
+            const pool = await getPool(cfg, ctx.secrets);
             let producerConn: Connection;
             try {
                 producerConn = await pool.getConnection();
             } catch (err) {
-                group.items.forEach((i) => run.errored(i, new vscode.TestMessage(String(err))));
+                group.items.forEach((i) => run.errored(i, new vscode.TestMessage(describeConnectionError(err, profile))));
                 continue;
             }
             let consumerConn: Connection;
             try {
                 consumerConn = await pool.getConnection();
             } catch (err) {
-                group.items.forEach((i) => run.errored(i, new vscode.TestMessage(String(err))));
+                group.items.forEach((i) => run.errored(i, new vscode.TestMessage(describeConnectionError(err, profile))));
                 await producerConn.close().catch(() => undefined);
                 continue;
             }
