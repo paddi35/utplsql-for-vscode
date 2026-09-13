@@ -293,6 +293,18 @@
           "when": "editorLangId == sql || editorLangId == oracle-sql",
           "group": "utplsql"
         }
+      ],
+      "testing/item/context": [
+        {
+          "command": "utplsql.runWithReporter",
+          "when": "testId =~ /^conn:.+path:/",
+          "group": "utplsql@1"
+        },
+        {
+          "command": "utplsql.generateTest",
+          "when": "testId =~ /^conn:.+path:/",
+          "group": "utplsql@2"
+        }
       ]
     },
     "snippets": [

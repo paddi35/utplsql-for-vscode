@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { candidateLabel, Candidate, chooseTarget, editorTargetFromVirtualSource } from '../../src/commands/resolveTarget';
+import { candidateLabel, Candidate, chooseTarget, editorTargetFromVirtualSource, targetFromDiscoveryRow } from '../../src/commands/resolveTarget';
 
 /** Fails the test if called — asserts a code path that must resolve without ever prompting. */
 function pickOneMustNotBeCalled(): (labels: string[]) => Promise<string | undefined> {
@@ -78,5 +78,58 @@ describe('editorTargetFromVirtualSource', () => {
     it('leaves procedureName undefined when the cursor path names only the package', () => {
         const target = editorTargetFromVirtualSource({ owner: 'FINANCE', name: 'TEST_BUDGET' }, 'TEST_BUDGET');
         assert.deepEqual(target, { owner: 'FINANCE', packageName: 'TEST_BUDGET', procedureName: undefined });
+    });
+});
+
+/**
+ * The Test Explorer context menu hands the clicked item's discovery row to
+ * these commands, so they act on what was right-clicked instead of prompting
+ * for it again (issue #29's follow-up). The two "no object" cases matter as
+ * much as the positive ones: returning a wrong guess there would run or
+ * export something the user never picked.
+ */
+describe('targetFromDiscoveryRow', () => {
+    const suiteRow = {
+        objectOwner: 'ut3',
+        objectName: 'TEST_CALC_PKG',
+        itemName: 'TEST_CALC_PKG',
+        itemType: 'UT_SUITE' as const
+    };
+
+    it('resolves a suite row to its package, with no procedure', () => {
+        assert.deepEqual(targetFromDiscoveryRow(suiteRow), {
+            owner: 'UT3',
+            packageName: 'TEST_CALC_PKG',
+            procedureName: undefined
+        });
+    });
+
+    it('resolves a test row to the package plus that one test', () => {
+        assert.deepEqual(
+            targetFromDiscoveryRow({ ...suiteRow, itemName: 'TEST_ADD', itemType: 'UT_TEST' }),
+            { owner: 'UT3', packageName: 'TEST_CALC_PKG', procedureName: 'TEST_ADD' }
+        );
+    });
+
+    it('resolves a context row to the whole package, since it names no single test', () => {
+        assert.deepEqual(
+            targetFromDiscoveryRow({ ...suiteRow, itemName: 'NESTED_CONTEXT_#1', itemType: 'UT_SUITE_CONTEXT' }),
+            { owner: 'UT3', packageName: 'TEST_CALC_PKG', procedureName: undefined }
+        );
+    });
+
+    it('resolves a --%suitepath grouping node to nothing, so the caller prompts instead of guessing a package', () => {
+        assert.equal(
+            targetFromDiscoveryRow({ ...suiteRow, objectName: '', itemName: 'a', itemType: 'UT_LOGICAL_SUITE' }),
+            undefined
+        );
+    });
+
+    it('resolves a row without an object name to nothing even when its type looks actionable', () => {
+        assert.equal(targetFromDiscoveryRow({ ...suiteRow, objectName: '' }), undefined);
+    });
+
+    it('upper-cases the owner, so the target matches what the rest of the command layer expects', () => {
+        assert.equal(targetFromDiscoveryRow({ ...suiteRow, objectOwner: 'hr' })?.owner, 'HR');
     });
 });

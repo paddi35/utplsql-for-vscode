@@ -6,6 +6,13 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
 
 ### Added
 
+- **"Run with Reporter (Export)" and "Generate Test Package" are now on the Test Explorer's own
+  right-click menu**, on any item that stands for a database object. They act on the item that was
+  clicked rather than asking again which object was meant, which is what made them awkward to reach
+  from a workspace with no local PL/SQL files. Grouping nodes (a `--%suitepath` level) and
+  connection roots do not offer them, since they name no single object.
+- CodeQL analysis runs on every push, every pull request and weekly, as a committed workflow so the
+  query selection is reviewable rather than configured out of sight.
 - `--%disabled` tests are now marked in the Test Explorer (a `disabled` tag and description) instead
   of being indistinguishable from enabled tests until run.
 - `utplsql.runWithTags` runs all tests carrying one or more chosen `--%tags(...)` values.
@@ -65,6 +72,20 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
 
 ### Fixed
 
+- A command that could not reach the database reported VS Code's generic "Running the contributed
+  command failed" instead of the reason. Every one of them opens a pooled connection somewhere, and
+  none of those calls had a catch above it, so the messages that matter most — a stored password
+  that no longer works, a TNS alias that stopped resolving, every pooled connection being busy —
+  were the ones the user never saw.
+- Listing reporters across several connection profiles aborted entirely as soon as one profile could
+  not be reached, which also made the "none of the selected connection profiles could be reached"
+  message unreachable. Each profile is now probed independently and a failing one is logged and
+  skipped.
+- Coverage resolved PACKAGE/PACKAGE BODY types through its own database round trip while the Test
+  Explorer already had the answer cached. Both now share one cache, which is also what keeps it
+  correct: "Refresh Tests" and a changed connection profile clear that cache, and a second instance
+  would have gone on answering PACKAGE for something recompiled as PACKAGE BODY until the window was
+  reloaded.
 - `a_tags` was bound as a `ut_varchar2_list` instead of the plain, comma-joined `varchar2` value
   `ut_runner.run` actually expects — every tagged run failed to compile, which surfaced only as
   the consumer connection silently hanging until its 60-second timeout rather than a clear error.

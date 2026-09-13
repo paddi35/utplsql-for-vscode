@@ -17,6 +17,40 @@ export interface Candidate {
     procedureName?: string;
 }
 
+/**
+ * The target a Test Explorer item stands for, or undefined when it stands
+ * for no single database object.
+ *
+ * This is what lets the Test Explorer context menu act on the item that was
+ * right-clicked instead of falling back to a QuickPick that asks the user to
+ * name again what they just clicked (issue #29).
+ *
+ * Two kinds of row have no object to act on. A UT_LOGICAL_SUITE is a
+ * --%suitepath(...) grouping node that exists only as a path segment -- no
+ * package is named by it. A profile root has no row at all. Both return
+ * undefined, and the caller then prompts as before rather than guessing at
+ * one of the packages underneath.
+ *
+ * A UT_SUITE_CONTEXT names its package but not a single test, so it
+ * resolves to the package: running or exporting the whole package is a
+ * superset of the context, which is the safe direction to be wrong in.
+ */
+export function targetFromDiscoveryRow(row: {
+    objectOwner: string;
+    objectName: string;
+    itemName: string;
+    itemType: 'UT_SUITE' | 'UT_SUITE_CONTEXT' | 'UT_TEST' | 'UT_LOGICAL_SUITE';
+}): Candidate | undefined {
+    if (row.itemType === 'UT_LOGICAL_SUITE' || !row.objectName) {
+        return undefined;
+    }
+    return {
+        owner: row.objectOwner.toUpperCase(),
+        packageName: row.objectName,
+        procedureName: row.itemType === 'UT_TEST' ? row.itemName : undefined
+    };
+}
+
 /** `OWNER.PACKAGE` or `OWNER.PACKAGE.PROCEDURE` — the QuickPick label chooseTarget offers for a candidate, and the key it dedupes candidates by. */
 export function candidateLabel(candidate: Candidate): string {
     return candidate.procedureName ? `${candidate.owner}.${candidate.packageName}.${candidate.procedureName}` : `${candidate.owner}.${candidate.packageName}`;

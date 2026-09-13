@@ -1,0 +1,57 @@
+name: CodeQL
+
+# Committed as an "advanced setup" workflow rather than switching on GitHub's
+# default CodeQL setup, so the configuration lives in the repository and
+# changes to it go through review like anything else. The two cannot both be
+# active: enabling default setup under Settings -> Code security disables this
+# file, so leave it off.
+#
+# Issue #14 added dependency scanning (Dependabot plus the npm audit gate in
+# ci.yml); those look at what the project depends on. This looks at what the
+# project itself does -- the extension talks to a database with
+# caller-supplied identifiers, renders database-derived HTML, and writes files
+# at paths taken from settings, which is exactly the shape of code where an
+# injection or path-traversal slip is easy to miss in review.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a newly published query finds existing code rather than only
+    # code that happens to change afterwards. Monday 04:17 UTC: off the hour
+    # to avoid GitHub's scheduling peak, which delays cron jobs.
+    - cron: '17 4 * * 1'
+
+jobs:
+  analyze:
+    name: Analyze TypeScript
+    runs-on: ubuntu-latest
+    permissions:
+      # Both required: security-events to upload the SARIF results, contents
+      # to check the code out. Nothing else -- this job never needs write
+      # access to the repository itself.
+      security-events: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+          # security-and-quality over the default security-extended: this is a
+          # single-package repository where the quality queries are cheap, and
+          # they catch the class of bug this codebase has already had (unused
+          # or shadowed state, promises that are never awaited).
+          queries: security-and-quality
+
+      # No build step: the CodeQL JavaScript/TypeScript extractor reads the
+      # sources directly. Running esbuild first would hand it a single bundled
+      # file with node_modules inlined, which is both slower and worse -- every
+      # finding would point into the bundle instead of into src/.
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: '/language:javascript-typescript'
