@@ -72,6 +72,12 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
 
 ### Fixed
 
+- A coverage run failed outright — losing coverage for the whole schema — when any object it
+  depended on had a name that is not a plain identifier. Oracle allows quoted identifiers, and such
+  a name cannot be written into the generated PL/SQL, so the run died at SQL-build time with
+  "invalid include object". That object is now dropped from the derived scope and named in the
+  output channel instead. A name given explicitly in `utplsql.coverage.includeObjects` still fails
+  loudly: the user typed it and can correct it.
 - A command that could not reach the database reported VS Code's generic "Running the contributed
   command failed" instead of the reason. Every one of them opens a pooled connection somewhere, and
   none of those calls had a catch above it, so the messages that matter most — a stored password

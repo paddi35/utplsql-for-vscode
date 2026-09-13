@@ -246,6 +246,17 @@ async function buildCoverageOptions(ctx: UtplsqlContext, profile: string, items:
                     includeObjectsOverride: coverageCfg.get<string[]>('includeObjects', [])
                 });
 
+                // Reported, not swallowed: an object dropped here really is
+                // missing from the coverage result, and the reason (a name that
+                // cannot be written into the generated PL/SQL) is not something
+                // the user could work out from the numbers alone. Before this was
+                // filtered, such a name failed the entire run at SQL-build time.
+                for (const dropped of scope.unusableNames) {
+                    ctx.output.appendLine(
+                        `utPLSQL: coverage — excluding '${dropped.owner}.${dropped.name}' from the coverage scope: its name is not a plain identifier and cannot be passed to ut_runner.run`
+                    );
+                }
+
                 const { fileMappings, pathToUri } = await resolveFileMappings(ctx, scopeConn, profile, scope.includeObjects.values());
                 // The test packages themselves are reported via a_test_file_mappings
                 // instead of a_exclude_objects: utPLSQL distinguishes "this file is

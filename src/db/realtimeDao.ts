@@ -38,6 +38,22 @@ export function newReporterId(): string {
 
 const IDENTIFIER_RE = /^[A-Za-z0-9_$#.]+$/;
 
+/**
+ * Whether a name can be embedded in the generated PL/SQL at all.
+ *
+ * Everything this module builds goes into a literal in an anonymous block,
+ * so a name that is not a plain identifier cannot be passed through safely
+ * and validateIdentifier below refuses it. Exported so callers that
+ * *derive* a name list (coverageScope.ts, from all_/dba_dependencies) can
+ * drop such a name up front instead of assembling options that are
+ * guaranteed to throw: an Oracle schema may legally contain a quoted
+ * identifier, and one such object should cost coverage for that object,
+ * not for the whole run.
+ */
+export function isPlainIdentifier(value: string): boolean {
+    return IDENTIFIER_RE.test(value);
+}
+
 function quoteLiteral(value: string): string {
     return `'${value.replace(/'/g, "''")}'`;
 }

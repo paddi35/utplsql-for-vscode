@@ -1,3 +1,5 @@
+import { isPlainIdentifier } from '../db/realtimeDao';
+
 /**
  * Pure scope-building half of coverage.ts's buildCoverageOptions — see that
  * module for the vscode/Connection-dependent glue around this. Kept
@@ -62,6 +64,14 @@ export interface CoverageScope {
     testObjects: Map<string, ObjectRef>;
     /** *_dependencies-derived (or overridden) coverage scope, deduplicated by owner.name. */
     includeObjects: Map<string, ObjectRef>;
+    /**
+     * Derived dependencies dropped because their name cannot be expressed
+     * as a plain identifier — reported by the caller rather than silently
+     * swallowed, since their coverage really is missing from the result.
+     * Never populated from the includeObjects override: a name the user
+     * typed is refused loudly instead.
+     */
+    unusableNames: ObjectRef[];
 }
 
 function refKey(owner: string, name: string): string {
@@ -84,9 +94,24 @@ export async function computeCoverageScope(
     }
 
     const includeObjects = new Map<string, ObjectRef>();
+    const unusableNames: ObjectRef[] = [];
     for (const [owner, names] of namesByOwner) {
         const deps = await includesFn(owner, [...names]);
-        deps.forEach((d) => includeObjects.set(refKey(d.owner, d.name), d));
+        deps.forEach((d) => {
+            // A dependency whose name is not a plain identifier (a quoted
+            // identifier, which Oracle allows) cannot go into the generated
+            // PL/SQL: realtimeDao's validateIdentifier refuses it. Before
+            // this filter it refused it at *SQL-build* time, by which point
+            // the whole coverage run failed -- so a single oddly-named object
+            // anywhere in the schema cost coverage for everything else in it.
+            // Dropping it here costs coverage for that one object and is
+            // reported by the caller.
+            if (!isPlainIdentifier(d.name) || !isPlainIdentifier(d.owner)) {
+                unusableNames.push(d);
+                return;
+            }
+            includeObjects.set(refKey(d.owner, d.name), d);
+        });
     }
 
     // Dependency discovery can't tell the utPLSQL framework's own packages
@@ -117,5 +142,5 @@ export async function computeCoverageScope(
         }
     }
 
-    return { schemes, testObjects, includeObjects };
+    return { schemes, testObjects, includeObjects, unusableNames };
 }
