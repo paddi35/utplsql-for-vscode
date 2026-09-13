@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
-import { addProfile, ConnectionProfile, getProfile, readProfiles, removeProfile, setPassword } from '../db/connections';
-import { getPool, recyclePool } from '../db/pool';
+import { addProfile, ConnectionProfile, getProfile, readProfiles, removeProfile, setPassword, validateProfileName } from '../db/connections';
+import { getPool, recyclePool, validateSchemaName } from '../db/pool';
+import { forgetProfile, getSuiteRows } from '../testing/controller';
 import * as dao from '../db/utplsqlDao';
 import { runWithReporter as runWithReporterDao } from '../db/reporterDao';
 import { UtplsqlContext } from '../testing/model';
@@ -10,7 +11,6 @@ import { readReporterOptions } from '../testing/reporterConfig';
 import { generateTestPackage, readGenerateOptions } from '../generate/testTemplate';
 import { matchesConfiguredLanguage } from '../workspace/languageIndex';
 import { listTnsAliases, resolveTnsAdminDir } from '../db/tnsnames';
-import { getSuiteRows } from '../testing/controller';
 import { parseVirtualSourceUri } from '../workspace/virtualSource';
 import { Candidate, chooseTarget, editorTargetFromVirtualSource } from './resolveTarget';
 
@@ -52,47 +52,137 @@ async function pickProfile(promptTitle: string): Promise<string | undefined> {
     return pick;
 }
 
+/**
+ * The prompts addConnection needs, factored out so runAddConnection's
+ * ordering/validation/persistence logic (issue #25) is testable by
+ * injecting canned answers instead of driving real vscode.window.showInputBox
+ * dialogs. `realAddConnectionPrompts` below is the only implementation
+ * wired into the actual command.
+ */
+export interface AddConnectionPrompts {
+    name(existingNames: readonly string[]): Promise<string | undefined>;
+    user(): Promise<string | undefined>;
+    connectString(): Promise<string | undefined>;
+    defaultSchema(): Promise<string | undefined>;
+    password(name: string, user: string): Promise<string | undefined>;
+}
+
+/** validateSchemaName throws on an invalid value; showInputBox's validateInput wants a message string (or undefined) instead. */
+function schemaValidationMessage(value: string): string | undefined {
+    try {
+        validateSchemaName(value);
+        return undefined;
+    } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+    }
+}
+
+const realAddConnectionPrompts: AddConnectionPrompts = {
+    name: async (existingNames) =>
+        vscode.window.showInputBox({
+            prompt: 'Connection profile name',
+            ignoreFocusOut: true,
+            validateInput: (value) => validateProfileName(value, existingNames)
+        }),
+    user: async () => vscode.window.showInputBox({ prompt: 'DB user', ignoreFocusOut: true }),
+    connectString: async () => pickConnectString(),
+    defaultSchema: async () =>
+        vscode.window.showInputBox({
+            prompt: 'Default schema (optional, defaults to the DB user)',
+            ignoreFocusOut: true,
+            validateInput: (value) => (value ? schemaValidationMessage(value) : undefined)
+        }),
+    password: async (name, user) =>
+        vscode.window.showInputBox({
+            prompt: `Password for connection '${name}' (DB user '${user}', stored in SecretStorage)`,
+            password: true,
+            ignoreFocusOut: true
+        })
+};
+
+/**
+ * Gathers every answer — including the password — before persisting
+ * anything, so an Esc at any prompt (including the password one) leaves no
+ * partial state: previously addProfile() ran right after the schema prompt,
+ * so cancelling the password prompt that followed it still left a
+ * persisted, secret-less profile behind (issue #25, symptom 2). Name and
+ * schema are validated twice: once live, in the prompt's own validateInput
+ * (real prompts only), and again here so the same rule applies regardless
+ * of where the answer came from, and so addProfile's own duplicate-name
+ * throw is never the first line of defence — it is now caught below instead
+ * of surfacing as VS Code's generic "command failed" notification (symptom
+ * 1). An explicitly empty password is persisted as "no password yet" rather
+ * than silently skipped, and says so.
+ */
+export async function runAddConnection(extCtx: vscode.ExtensionContext, prompts: AddConnectionPrompts = realAddConnectionPrompts): Promise<void> {
+    try {
+        const existingNames = readProfiles().map((p) => p.name);
+        const name = await prompts.name(existingNames);
+        if (!name) {
+            return;
+        }
+        const nameError = validateProfileName(name, existingNames);
+        if (nameError) {
+            throw new Error(nameError);
+        }
+        const user = await prompts.user();
+        if (!user) {
+            return;
+        }
+        const connectString = await prompts.connectString();
+        if (!connectString) {
+            return;
+        }
+        const defaultSchema = await prompts.defaultSchema();
+        if (defaultSchema) {
+            validateSchemaName(defaultSchema);
+        }
+        const password = await prompts.password(name, user);
+        if (password === undefined) {
+            return;
+        }
+        await addProfile({ name, user, connectString, defaultSchema: defaultSchema || undefined });
+        if (password) {
+            await setPassword(extCtx.secrets, name, password);
+            vscode.window.showInformationMessage(`utPLSQL: connection '${name}' added.`);
+        } else {
+            vscode.window.showInformationMessage(
+                `utPLSQL: connection '${name}' added without a password. Run "utPLSQL: Set Password for Connection" before using it.`
+            );
+        }
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // validateSchemaName's own message already carries the 'utPLSQL: '
+        // prefix (it's also used verbatim as a pool-creation failure); avoid
+        // doubling it up for that path while still prefixing every other
+        // error (addProfile's duplicate-name message, most notably).
+        vscode.window.showErrorMessage(message.startsWith('utPLSQL:') ? message : `utPLSQL: ${message}`);
+    }
+}
+
 export function registerConnectionCommands(extCtx: vscode.ExtensionContext): void {
     extCtx.subscriptions.push(
-        vscode.commands.registerCommand('utplsql.addConnection', async () => {
-            const name = await vscode.window.showInputBox({ prompt: 'Connection profile name', ignoreFocusOut: true });
-            if (!name) {
-                return;
-            }
-            const user = await vscode.window.showInputBox({ prompt: 'DB user', ignoreFocusOut: true });
-            if (!user) {
-                return;
-            }
-            const connectString = await pickConnectString();
-            if (!connectString) {
-                return;
-            }
-            const defaultSchema = await vscode.window.showInputBox({
-                prompt: 'Default schema (optional, defaults to the DB user)',
-                ignoreFocusOut: true
-            });
-            await addProfile({ name, user, connectString, defaultSchema: defaultSchema || undefined });
-            const password = await vscode.window.showInputBox({
-                prompt: `Password for '${user}' (stored in SecretStorage)`,
-                password: true,
-                ignoreFocusOut: true
-            });
-            if (password) {
-                await setPassword(extCtx.secrets, name, password);
-            }
-            vscode.window.showInformationMessage(`utPLSQL: connection '${name}' added.`);
-        }),
+        vscode.commands.registerCommand('utplsql.addConnection', () => runAddConnection(extCtx)),
 
         vscode.commands.registerCommand('utplsql.setPassword', async () => {
             const name = await pickProfile('Select connection profile');
             if (!name) {
                 return;
             }
-            const password = await vscode.window.showInputBox({ prompt: `Password for '${name}'`, password: true, ignoreFocusOut: true });
+            const password = await vscode.window.showInputBox({
+                prompt: `Password for connection '${name}'`,
+                password: true,
+                ignoreFocusOut: true
+            });
             if (password === undefined) {
                 return;
             }
             await setPassword(extCtx.secrets, name, password);
+            // The pool cached for `name` (if any) was built with the old
+            // password and would otherwise keep failing with ORA-01017
+            // forever, even though the just-stored secret is correct —
+            // issue #19's most confusing symptom (no reload needed after this).
+            await forgetProfile(name);
             vscode.window.showInformationMessage(`utPLSQL: password for '${name}' stored.`);
         }),
 
@@ -110,6 +200,13 @@ export function registerConnectionCommands(extCtx: vscode.ExtensionContext): voi
                 return;
             }
             await removeProfile(name, extCtx.secrets);
+            // Closes the pool (so its Oracle sessions don't outlive the
+            // profile) and clears the profile's caches directly; the
+            // controller's own onDidChangeConfiguration listener also fires
+            // from removeProfile's settings update and removes the root
+            // TestItem from the Testing view — this call doesn't depend on
+            // that timing for the part that matters here.
+            await forgetProfile(name);
             vscode.window.showInformationMessage(`utPLSQL: connection '${name}' removed.`);
         })
     );
