@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { addProfile, getProfile, readProfiles, removeProfile, setPassword } from '../db/connections';
-import { getPool } from '../db/pool';
+import { getPool, recyclePool } from '../db/pool';
 import * as dao from '../db/utplsqlDao';
 import { runWithReporter as runWithReporterDao } from '../db/reporterDao';
 import { UtplsqlContext } from '../testing/model';
@@ -300,14 +300,47 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             }
             const runPath = `${resolved.owner}:${resolved.packageName}`;
 
-            const producerConn = await pool.getConnection();
-            const consumerConn = await pool.getConnection();
-            let output: string;
-            try {
-                output = await runWithReporterDao(producerConn, consumerConn, reporterName, [runPath], readReporterOptions());
-            } finally {
-                await producerConn.close();
-                await consumerConn.close();
+            // Gives the quick cursor shortcut the same visible, cancellable
+            // operation the "Export with Reporter" run profile now has
+            // (runReporterExport, reporterProfile.ts) — previously this
+            // command had no cancellation token at all, so the only way to
+            // stop a wedged export was to reload the extension host.
+            const { output, cancelled } = await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: `utPLSQL: exporting '${resolved.packageName}' with ${reporterName}…`,
+                    cancellable: true
+                },
+                async (progress, token) => {
+                    const producerConn = await pool.getConnection();
+                    const consumerConn = await pool.getConnection();
+                    let result: Awaited<ReturnType<typeof runWithReporterDao>>;
+                    try {
+                        result = await runWithReporterDao(producerConn, consumerConn, reporterName, [runPath], readReporterOptions(), token, (message) =>
+                            progress.report({ message })
+                        );
+                    } finally {
+                        await producerConn.close().catch(() => undefined);
+                        // Tolerant: a cancelled result already had this same
+                        // connection broken and drop-closed by
+                        // runWithReporterDao's cancelConsumer(), so a second
+                        // close() on it throwing is expected, not a failure.
+                        await consumerConn.close().catch(() => undefined);
+                    }
+                    // Only after both connections are safely closed — same
+                    // ordering as runOneProfile's finally block
+                    // (runHandler.ts) and for the same reason: recyclePool()'s
+                    // pool.close(0) must not race a still-executing statement
+                    // on producerConn.
+                    if (result.cancelled) {
+                        await recyclePool(resolved.profile);
+                    }
+                    return result;
+                }
+            );
+            if (cancelled) {
+                ctx.output.appendLine(`utPLSQL: export of '${resolved.packageName}' cancelled.`);
+                return;
             }
 
             const target = await vscode.window.showQuickPick(['Show in Output Channel', 'Save to File'], {

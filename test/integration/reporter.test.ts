@@ -30,7 +30,7 @@ describe('reporter export against a real schema [integration]', function () {
     });
 
     it('ut_documentation_reporter renders the suite description, per-test outcomes and a failure summary', async () => {
-        const output = await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [`${TEST_OWNER}:test_calc_pkg`]);
+        const { output } = await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [`${TEST_OWNER}:test_calc_pkg`]);
 
         assert.match(output, /utplsql-vsc integration fixture/);
         assert.match(output, /adds two numbers correctly/);
@@ -48,11 +48,11 @@ describe('reporter export against a real schema [integration]', function () {
     });
 
     it('a_color_console adds ANSI escape codes to the documentation reporter output', async () => {
-        const plain = await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [`${TEST_OWNER}:test_calc_pkg.test_add`]);
+        const { output: plain } = await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [`${TEST_OWNER}:test_calc_pkg.test_add`]);
         const ansiEscape = /\x1b\[/;
         assert.doesNotMatch(plain, ansiEscape, 'expected no ANSI escapes without a_color_console');
 
-        const colored = await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [`${TEST_OWNER}:test_calc_pkg.test_add`], {
+        const { output: colored } = await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [`${TEST_OWNER}:test_calc_pkg.test_add`], {
             colorConsole: true
         });
         assert.match(colored, ansiEscape, 'expected ANSI escapes with a_color_console => true');
@@ -71,7 +71,7 @@ describe('reporter export against a real schema [integration]', function () {
     });
 
     it('runWithReporter accepts multiple run paths in one call, as the Export-with-Reporter profile needs for a multi-item selection', async () => {
-        const output = await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [
+        const { output } = await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [
             `${TEST_OWNER}:test_calc_pkg.test_add`,
             `${TEST_OWNER}:test_calc_pkg.nested_context_#1.test_nested`
         ]);
