@@ -327,7 +327,7 @@
   },
   "devDependencies": {
     "@types/mocha": "^10.0.7",
-    "@types/node": "^20.14.0",
+    "@types/node": "^26.5.1",
     "@types/oracledb": "^6.10.4",
     "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^3.1.0",
