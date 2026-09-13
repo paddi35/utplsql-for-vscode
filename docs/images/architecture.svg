@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 430" width="900" height="430" font-family="'Segoe UI',system-ui,-apple-system,sans-serif">
+  <title>How utPLSQL for VS Code talks to the database</title>
+  <desc>VS Code connects directly to Oracle with node-oracledb in Thin mode. Three flows are shown: discovery via ut_runner.get_suites_info, running tests via the real-time reporter, and coverage via the Sonar coverage reporter.</desc>
+
+  <rect width="900" height="430" fill="#12182a"/>
+
+  <!-- VS Code side -->
+  <rect x="28" y="52" width="286" height="330" rx="10" fill="#1e1e1e" stroke="#2f3b52"/>
+  <text x="46" y="80" fill="#e6edf3" font-size="15" font-weight="600">Visual Studio Code</text>
+
+  <rect x="46" y="96" width="250" height="58" rx="6" fill="#252526" stroke="#3a4761"/>
+  <text x="60" y="118" fill="#cbd5e1" font-size="13" font-weight="600">Test Explorer</text>
+  <text x="60" y="138" fill="#8b98ab" font-size="11.5">TestController, run &amp; coverage profiles</text>
+
+  <rect x="46" y="164" width="250" height="58" rx="6" fill="#252526" stroke="#3a4761"/>
+  <text x="60" y="186" fill="#cbd5e1" font-size="13" font-weight="600">Editor</text>
+  <text x="60" y="206" fill="#8b98ab" font-size="11.5">gutter icons, failure locations, coverage</text>
+
+  <rect x="46" y="232" width="250" height="58" rx="6" fill="#252526" stroke="#3a4761"/>
+  <text x="60" y="254" fill="#cbd5e1" font-size="13" font-weight="600">SecretStorage</text>
+  <text x="60" y="274" fill="#8b98ab" font-size="11.5">passwords — never in settings.json</text>
+
+  <rect x="46" y="300" width="250" height="58" rx="6" fill="#1b2b3d" stroke="#2d8cf0"/>
+  <text x="60" y="322" fill="#6ec1ff" font-size="13" font-weight="600">node-oracledb (Thin mode)</text>
+  <text x="60" y="342" fill="#8b98ab" font-size="11.5">no Oracle Client install required</text>
+
+  <!-- Oracle side -->
+  <rect x="586" y="52" width="286" height="330" rx="10" fill="#1e1e1e" stroke="#2f3b52"/>
+  <text x="604" y="80" fill="#e6edf3" font-size="15" font-weight="600">Oracle Database</text>
+
+  <rect x="604" y="96" width="250" height="58" rx="6" fill="#1c2e24" stroke="#3ddc84"/>
+  <text x="618" y="118" fill="#7ee2a8" font-size="13" font-weight="600">ut_runner.get_suites_info</text>
+  <text x="618" y="138" fill="#8b98ab" font-size="11.5">suites, contexts, tests, tags</text>
+
+  <rect x="604" y="164" width="250" height="58" rx="6" fill="#1c2e24" stroke="#3ddc84"/>
+  <text x="618" y="186" fill="#7ee2a8" font-size="13" font-weight="600">ut_realtime_reporter</text>
+  <text x="618" y="206" fill="#8b98ab" font-size="11.5">one event per test, as it finishes</text>
+
+  <rect x="604" y="232" width="250" height="58" rx="6" fill="#1c2e24" stroke="#3ddc84"/>
+  <text x="618" y="254" fill="#7ee2a8" font-size="13" font-weight="600">ut_coverage_sonar_reporter</text>
+  <text x="618" y="274" fill="#8b98ab" font-size="11.5">per-line hits for the covered scope</text>
+
+  <rect x="604" y="300" width="250" height="58" rx="6" fill="#252526" stroke="#3a4761"/>
+  <text x="618" y="322" fill="#cbd5e1" font-size="13" font-weight="600">your PL/SQL packages</text>
+  <text x="618" y="342" fill="#8b98ab" font-size="11.5">the source of truth for discovery</text>
+
+  <!-- arrows -->
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="#6ec1ff"/>
+    </marker>
+    <marker id="ag" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="#3ddc84"/>
+    </marker>
+  </defs>
+
+  <path d="M314 125 H586" stroke="#6ec1ff" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+  <text x="450" y="118" fill="#6ec1ff" font-size="11.5" text-anchor="middle">discover</text>
+
+  <path d="M586 195 H314" stroke="#3ddc84" stroke-width="2" fill="none" marker-end="url(#ag)"/>
+  <text x="450" y="188" fill="#3ddc84" font-size="11.5" text-anchor="middle">live results</text>
+
+  <path d="M586 263 H314" stroke="#3ddc84" stroke-width="2" fill="none" marker-end="url(#ag)"/>
+  <text x="450" y="256" fill="#3ddc84" font-size="11.5" text-anchor="middle">coverage XML</text>
+
+  <path d="M314 331 H586" stroke="#6ec1ff" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+  <text x="450" y="324" fill="#6ec1ff" font-size="11.5" text-anchor="middle">run / export</text>
+
+  <text x="450" y="404" fill="#6b7a90" font-size="12" text-anchor="middle">One direct connection. No SQL Developer, no utPLSQL-cli, no Oracle Client.</text>
+</svg>

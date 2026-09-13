@@ -53,6 +53,12 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
 
 ### Changed
 
+- New extension icon, and a rewritten README: a walkthrough from adding a connection to a first
+  coverage run, four diagrams of the Testing view, the data flow, the four setup steps and the
+  coverage view, and a troubleshooting table. The reference sections (commands, settings, known
+  limitations, security) are unchanged in substance. The icon ships at 256×256 with the
+  full-resolution original kept in `docs/images/`, which takes the packaged `.vsix` from 1.04 MB
+  down to 234 KB — the old icon alone was 87% of it.
 - **Minimum VS Code raised from 1.85 to 1.137.** `@types/vscode` has to stay at or below
   `engines.vscode` (vsce refuses to package otherwise), so the type definitions could not be
   updated while the engine floor stayed at 1.85. No API newer than 1.85 is used yet; this only
