@@ -89,6 +89,14 @@ export interface RunWithReporterResult {
  * local buffer with no network round-trip left to interrupt — without this
  * check, cancellation would silently wait for the local buffer to drain
  * before ever taking effect.
+ *
+ * A getRow() rejection is only swallowed when isCancelled() is already true
+ * at that point — the expected NJS-018 ("invalid ResultSet") left by
+ * cancelConsumer()'s break()+drop. Any other rejection (e.g. ORA-20215 when
+ * the producer never registered within a_initial_timeout) is a real failure
+ * and must propagate, not be silently treated as a clean end-of-stream —
+ * swallowing it unconditionally left callers reporting an empty export with
+ * no indication anything had gone wrong.
  */
 async function drainLines(
     rs: ResultSet<Record<string, unknown>>,
@@ -101,8 +109,11 @@ async function drainLines(
             let row: Record<string, unknown> | undefined;
             try {
                 row = await rs.getRow();
-            } catch {
-                return;
+            } catch (err) {
+                if (isCancelled()) {
+                    return;
+                }
+                throw err;
             }
             if (!row) {
                 return;
@@ -184,7 +195,24 @@ END;`;
 
     try {
         onProgress?.('opening consumer…');
-        const result = await consumerConn.execute<{ cur: ResultSet<Record<string, unknown>> }>(
+        // Fired without awaiting: get_lines_cursor()'s wait-for-producer loop
+        // runs *synchronously inside this very execute() call* for a
+        // bulk-buffer reporter (ut_junit_reporter, ut_xunit_reporter,
+        // ut_tfs_junit_reporter, ut_sonar_test_reporter, and utPLSQL's
+        // built-in coverage reporters — confirmed against a live utPLSQL
+        // 3.2.3 instance's ut_output_bulk_buffer.get_lines_cursor source,
+        // which loops on dbms_lock/row checks and only opens its result
+        // cursor once that loop exits). A table-buffer reporter's
+        // get_lines_cursor(), by contrast, opens a lazy pipelined cursor
+        // that only starts waiting on the first fetch (drainLines() below).
+        // Awaiting this call before sending the producer statement meant the
+        // producer was never even dispatched until a bulk-buffer reporter's
+        // consumer had already finished waiting — a guaranteed ORA-20215
+        // every single time, for every bulk-buffer reporter, regardless of
+        // database or run size. The 100ms head start below now applies to
+        // "the consumer's statement has been sent", not "the consumer's
+        // statement has returned".
+        const consumeExecPromise = consumerConn.execute<{ cur: ResultSet<Record<string, unknown>> }>(
             consumeSql,
             {
                 id,
@@ -194,7 +222,6 @@ END;`;
             },
             { fetchArraySize: 50 }
         );
-        const rs = (result.outBinds as { cur: ResultSet<Record<string, unknown>> }).cur;
 
         await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -205,11 +232,31 @@ END;`;
         });
 
         const lines: string[] = [];
-        await drainLines(rs, lines, () => cancelled, onProgress);
+        // Any error from here — including consumeExecPromise itself
+        // rejecting, e.g. a bulk-buffer reporter's own ORA-20215, or
+        // cancelConsumer()'s break() landing while it's still in flight —
+        // must not skip the `await producePromise` below: producerConn.close()
+        // in the caller's finally block would otherwise race a
+        // still-executing statement on that same connection the moment this
+        // function returns/throws, which is exactly the crash producePromise
+        // exists to prevent (see this function's doc comment). So the error
+        // is captured here and only rethrown afterward, once the producer
+        // statement has genuinely settled either way.
+        let drainError: unknown;
+        try {
+            const result = await consumeExecPromise;
+            const rs = (result.outBinds as { cur: ResultSet<Record<string, unknown>> }).cur;
+            await drainLines(rs, lines, () => cancelled, onProgress);
+        } catch (err) {
+            drainError = err;
+        }
 
         await producePromise;
         if (produceError !== undefined) {
             throw produceError;
+        }
+        if (drainError !== undefined) {
+            throw drainError;
         }
         return { output: lines.join('\r\n'), cancelled };
     } finally {

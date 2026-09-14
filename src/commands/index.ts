@@ -652,6 +652,7 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
                 vscode.window.showErrorMessage('utPLSQL: no output reporters available on this DB.');
                 return;
             }
+            ctx.output.appendLine(`utPLSQL: reporters offered for export: ${reporters.map((r) => r.reporterObjectName).join(', ')}`);
             const reporterName = await vscode.window.showQuickPick(
                 reporters.map((r) => r.reporterObjectName),
                 { title: 'Select reporter' }

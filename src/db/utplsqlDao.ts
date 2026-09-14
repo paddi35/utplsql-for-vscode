@@ -377,6 +377,35 @@ export async function rebuildAnnotationCache(conn: Connection, owner: string): P
     await conn.execute(`BEGIN ut_runner.rebuild_annotation_cache(upper(:owner)); END;`, { owner });
 }
 
+/**
+ * utPLSQL's built-in coverage reporters — excluded from getReportersList()'s
+ * result below. They pass is_output_reporter = 'Y' same as any text/XML
+ * reporter, but need a_source_file_mappings (and friends) to produce
+ * anything; "Export with Reporter" (runWithReporter in reporterDao.ts) only
+ * ever sends a_paths/a_reporters, never file mappings. Listing one of these
+ * in that command's reporter QuickPick let a user pick a reporter that can
+ * never write a single line, so its consumer's get_lines_cursor() always
+ * hit its a_initial_timeout and failed with ORA-20215 — deterministically,
+ * regardless of what was selected to export. Coverage export already has
+ * its own dedicated, properly-wired path ("Run with Coverage" /
+ * buildProduceSql's coverage options in realtimeDao.ts), so these are
+ * simply not offered here rather than made to half-work through this one.
+ */
+const COVERAGE_REPORTER_NAMES = new Set(['UT_COVERAGE_HTML_REPORTER', 'UT_COVERAGE_SONAR_REPORTER', 'UT_COVERAGE_COBERTURA_REPORTER']);
+
+/**
+ * ut_runner.get_reporters_list() returns reporter_object_name schema-qualified
+ * (e.g. 'UT3.UT_COVERAGE_SONAR_REPORTER', confirmed against a live utPLSQL
+ * 3.2.3 instance) — not the bare object name COVERAGE_REPORTER_NAMES lists.
+ * Comparing the raw value against that set never matched, so every coverage
+ * reporter kept reaching the "Export with Reporter" QuickPick despite the
+ * filter below. Only the part after the final '.' is compared here.
+ */
+function bareObjectName(qualifiedName: string): string {
+    const dot = qualifiedName.lastIndexOf('.');
+    return dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1);
+}
+
 export async function getReportersList(conn: Connection): Promise<ReporterInfo[]> {
     const result = await conn.execute<Record<string, unknown>>(
         `SELECT reporter_object_name, is_output_reporter FROM TABLE(ut_runner.get_reporters_list())`
@@ -386,7 +415,7 @@ export async function getReportersList(conn: Connection): Promise<ReporterInfo[]
             reporterObjectName: String(r.REPORTER_OBJECT_NAME),
             isOutputReporter: String(r.IS_OUTPUT_REPORTER) === 'Y'
         }))
-        .filter((r) => r.isOutputReporter);
+        .filter((r) => r.isOutputReporter && !COVERAGE_REPORTER_NAMES.has(bareObjectName(r.reporterObjectName).toUpperCase()));
 }
 
 /**

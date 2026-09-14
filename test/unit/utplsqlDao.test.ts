@@ -12,6 +12,7 @@ import {
     getSuitesInfo,
     parseItemType,
     isTestItem,
+    getReportersList,
     SuiteInfoRow
 } from '../../src/db/utplsqlDao';
 
@@ -49,6 +50,35 @@ function fakeProbeConnection(behavior: () => Promise<unknown>): { conn: Connecti
 function fakeRowsConnection(rows: Record<string, unknown>[]): Connection {
     return { execute: async () => ({ rows }) } as unknown as Connection;
 }
+
+describe('getReportersList', () => {
+    // reporter_object_name comes back schema-qualified against a live
+    // instance (e.g. 'UT3.UT_COVERAGE_SONAR_REPORTER', confirmed against a
+    // live utPLSQL 3.2.3 instance) — not the bare object name. A filter
+    // comparing the raw value against a bare-name set would never match, so
+    // this fixture deliberately uses the qualified shape throughout, the
+    // same regression bareObjectName() in utplsqlDao.ts exists to prevent.
+    it('excludes coverage reporters and non-output reporters, keeping plain output reporters', async () => {
+        const conn = fakeRowsConnection([
+            { REPORTER_OBJECT_NAME: 'UT3.UT_DOCUMENTATION_REPORTER', IS_OUTPUT_REPORTER: 'Y' },
+            { REPORTER_OBJECT_NAME: 'UT3.UT_JUNIT_REPORTER', IS_OUTPUT_REPORTER: 'Y' },
+            // Passes is_output_reporter = 'Y' same as any text reporter, but
+            // needs a_source_file_mappings that "Export with Reporter" never
+            // supplies — see COVERAGE_REPORTER_NAMES's doc comment in
+            // utplsqlDao.ts for why this must not reach that command's
+            // reporter QuickPick.
+            { REPORTER_OBJECT_NAME: 'UT3.UT_COVERAGE_HTML_REPORTER', IS_OUTPUT_REPORTER: 'Y' },
+            { REPORTER_OBJECT_NAME: 'UT3.UT_COVERAGE_SONAR_REPORTER', IS_OUTPUT_REPORTER: 'Y' },
+            { REPORTER_OBJECT_NAME: 'UT3.UT_COVERAGE_COBERTURA_REPORTER', IS_OUTPUT_REPORTER: 'Y' },
+            { REPORTER_OBJECT_NAME: 'UT3.UT_REALTIME_REPORTER', IS_OUTPUT_REPORTER: 'N' }
+        ]);
+        const reporters = await getReportersList(conn);
+        assert.deepEqual(
+            reporters.map((r) => r.reporterObjectName),
+            ['UT3.UT_DOCUMENTATION_REPORTER', 'UT3.UT_JUNIT_REPORTER']
+        );
+    });
+});
 
 describe('normalizeVersion', () => {
     it('parses a plain dotted version', () => {

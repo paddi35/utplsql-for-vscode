@@ -48,6 +48,15 @@ describe('reporter export against a real schema [integration]', function () {
         );
     });
 
+    it('excludes the built-in coverage reporters — they need a_source_file_mappings this export path never sends, so picking one always times out with ORA-20215', async () => {
+        const reporters = await dao.getReportersList(producerConn);
+        const names = reporters.map((r) => r.reporterObjectName.toUpperCase());
+        assert.ok(
+            !names.some((n) => n.endsWith('UT_COVERAGE_HTML_REPORTER') || n.endsWith('UT_COVERAGE_SONAR_REPORTER') || n.endsWith('UT_COVERAGE_COBERTURA_REPORTER')),
+            `expected no coverage reporter in the export quick-pick, got: ${names.join(', ')}`
+        );
+    });
+
     it('a_color_console adds ANSI escape codes to the documentation reporter output', async () => {
         const { output: plain } = await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [`${TEST_OWNER}:test_calc_pkg.test_add`]);
         const ansiEscape = /\x1b\[/;
@@ -80,6 +89,28 @@ describe('reporter export against a real schema [integration]', function () {
         assert.match(output, /test nested inside a suite context/);
         assert.doesNotMatch(output, /fails on purpose/);
     });
+
+    // ut_junit_reporter, ut_xunit_reporter, ut_tfs_junit_reporter and
+    // ut_sonar_test_reporter all construct themselves with
+    // ut_output_bulk_buffer() instead of the default ut_output_table_buffer()
+    // (see their constructors). Unlike table buffer's get_lines_cursor(),
+    // which opens a lazy pipelined cursor and only starts waiting on the
+    // first fetch, bulk buffer's get_lines_cursor() runs its entire
+    // wait-for-producer loop *synchronously inside the cursor-open call
+    // itself* (confirmed against a live utPLSQL 3.2.3 instance's
+    // ut_output_bulk_buffer type body). runWithReporter used to await that
+    // call before ever sending the producer statement, so for these four
+    // reporters the producer was never dispatched until the consumer had
+    // already finished waiting — a guaranteed ORA-20215 on every call,
+    // regardless of database or run size, root-caused by testing this
+    // directly against a live instance rather than guessing from the error
+    // text alone.
+    for (const reporterType of ['ut_junit_reporter', 'ut_xunit_reporter', 'ut_tfs_junit_reporter', 'ut_sonar_test_reporter']) {
+        it(`${reporterType} (a bulk-buffer reporter) completes without timing out`, async () => {
+            const { output } = await runWithReporter(producerConn, consumerConn, reporterType, [`${TEST_OWNER}:test_calc_pkg`]);
+            assert.ok(output.length > 0, `expected non-empty ${reporterType} output`);
+        });
+    }
 
     it('accepts an OWNER:PACKAGE run path built the same way runWithReporter\'s QuickPick fallback would build one, and produces non-empty output (issue #29)', async () => {
         // Reproduces suiteRowCandidates()'s mapping (commands/index.ts) --

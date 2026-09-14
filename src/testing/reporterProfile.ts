@@ -69,6 +69,7 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
             return;
         }
         const common = [...reporterSets[0]].filter((name) => reporterSets.every((s) => s.has(name))).sort();
+        ctx.output.appendLine(`utPLSQL: reporters offered for export: ${common.join(', ') || '(none)'}`);
         if (common.length === 0) {
             vscode.window.showErrorMessage(
                 profiles.length > 1
