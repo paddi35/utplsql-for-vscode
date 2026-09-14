@@ -59,13 +59,15 @@ COPY --from=utplsql-src --chown=oracle:oinstall /utplsql /opt/utplsql
 # Init-Skripte, die utPLSQL (und optional dessen Test-Suite) beim ersten Start
 # in die PDB installieren. Laufen automatisch nach der DB-/PDB-Erstellung,
 # vor "DATABASE IS READY TO USE!".
+COPY --chown=oracle:oinstall init-scripts/05-validate-credentials.sh  /container-entrypoint-initdb.d/05-validate-credentials.sh
 COPY --chown=oracle:oinstall init-scripts/10-install-utplsql.sh       /container-entrypoint-initdb.d/10-install-utplsql.sh
 COPY --chown=oracle:oinstall init-scripts/15-grant-dictionary-access.sh     /container-entrypoint-initdb.d/15-grant-dictionary-access.sh
 COPY --chown=oracle:oinstall init-scripts/16-create-unprivileged-user.sh /container-entrypoint-initdb.d/16-create-unprivileged-user.sh
 COPY --chown=oracle:oinstall init-scripts/20-install-utplsql-tests.sh /container-entrypoint-initdb.d/20-install-utplsql-tests.sh
 
 USER root
-RUN chmod +x /container-entrypoint-initdb.d/10-install-utplsql.sh \
+RUN chmod +x /container-entrypoint-initdb.d/05-validate-credentials.sh \
+              /container-entrypoint-initdb.d/10-install-utplsql.sh \
               /container-entrypoint-initdb.d/15-grant-dictionary-access.sh \
               /container-entrypoint-initdb.d/16-create-unprivileged-user.sh \
               /container-entrypoint-initdb.d/20-install-utplsql-tests.sh
