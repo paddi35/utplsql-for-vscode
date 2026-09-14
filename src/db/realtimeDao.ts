@@ -58,7 +58,13 @@ function quoteLiteral(value: string): string {
     return `'${value.replace(/'/g, "''")}'`;
 }
 
-function validateIdentifier(value: string, kind: string): string {
+/**
+ * Exported so reporterDao.ts's buildRunWithReporterSql/runWithReporter share
+ * this exact check and error message instead of each re-implementing it —
+ * both build the identical `${reporterType} := ${reporterType}()` shape this
+ * function protects, just for a plain (non-realtime) reporter.
+ */
+export function validateIdentifier(value: string, kind: string): string {
     if (!IDENTIFIER_RE.test(value)) {
         throw new Error(`utPLSQL: invalid ${kind} '${value}' — expected [A-Za-z0-9_$#.]+`);
     }
@@ -129,7 +135,8 @@ function reportersClause(id: string, coverage?: CoverageOptions): ReportersClaus
     if (coverage) {
         coverageId = newReporterId();
         const cov = `l_cov_rep`;
-        decls += `\n   ${cov} ${coverage.reporter} := ${coverage.reporter}();`;
+        const reporterType = validateIdentifier(coverage.reporter, 'coverage reporter');
+        decls += `\n   ${cov} ${reporterType} := ${reporterType}();`;
         decls += `\n   l_source_mappings ut_file_mappings := ut_file_mappings(\n            ${fileMappingsLiteral(coverage.fileMappings)}\n         );`;
         inits += `\n   ${cov}.set_reporter_id(${quoteLiteral(coverageId)});`;
         reporters += `, ${cov}`;
@@ -152,7 +159,8 @@ function reportersClause(id: string, coverage?: CoverageOptions): ReportersClaus
         if (coverage.additionalReporter && coverage.additionalReporter !== coverage.reporter) {
             additionalCoverageId = newReporterId();
             const cov2 = `l_cov_rep2`;
-            decls += `\n   ${cov2} ${coverage.additionalReporter} := ${coverage.additionalReporter}();`;
+            const additionalReporterType = validateIdentifier(coverage.additionalReporter, 'additional coverage reporter');
+            decls += `\n   ${cov2} ${additionalReporterType} := ${additionalReporterType}();`;
             inits += `\n   ${cov2}.set_reporter_id(${quoteLiteral(additionalCoverageId)});`;
             reporters += `, ${cov2}`;
         }
@@ -331,6 +339,7 @@ export async function* streamRows(rs: ResultSet<Record<string, unknown>>): Async
  * streaming needed since there is no live progress to show for these.
  */
 export async function consumeNamedReporter(conn: Connection, reporterType: string, id: string): Promise<string> {
+    validateIdentifier(reporterType, 'reporter type');
     const sql = `DECLARE
    l_reporter ${reporterType} := ${reporterType}();
 BEGIN
