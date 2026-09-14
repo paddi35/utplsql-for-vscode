@@ -47,6 +47,8 @@ describe('runAddConnection (issue #25: order prompts, persist last, catch duplic
                 user: async () => 'hr',
                 connectString: async () => 'localhost:1521/FREEPDB1',
                 defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => 'hunter2'
             });
 
@@ -67,6 +69,8 @@ describe('runAddConnection (issue #25: order prompts, persist last, catch duplic
                 user: async () => 'hr',
                 connectString: async () => 'localhost:1521/FREEPDB1',
                 defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => undefined // Esc
             });
 
@@ -85,6 +89,8 @@ describe('runAddConnection (issue #25: order prompts, persist last, catch duplic
                 user: async () => 'hr',
                 connectString: async () => 'localhost:1521/FREEPDB1',
                 defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => '' // pressed Enter on an empty box, not Esc
             });
 
@@ -105,6 +111,8 @@ describe('runAddConnection (issue #25: order prompts, persist last, catch duplic
                 user: async () => 'hr',
                 connectString: async () => undefined, // cancelled
                 defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => 'hunter2'
             });
             assert.deepEqual(store['utplsql.connections'] ?? [], []);
@@ -126,6 +134,8 @@ describe('runAddConnection (issue #25: order prompts, persist last, catch duplic
                 user: async () => 'hr2',
                 connectString: async () => 'y',
                 defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => 'pw'
             });
 
@@ -148,11 +158,164 @@ describe('runAddConnection (issue #25: order prompts, persist last, catch duplic
                 user: async () => 'hr',
                 connectString: async () => 'x',
                 defaultSchema: async () => 'not a valid identifier!',
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
                 password: async () => 'pw'
             });
 
             assert.deepEqual(store['utplsql.connections'] ?? [], []);
             assert.ok(messages.some((m) => m.kind === 'error' && m.message.includes('defaultSchema')));
+        } finally {
+            uninstall();
+        }
+    });
+
+    it('persists walletLocation and stores the wallet password when a wallet is configured (issue #83)', async () => {
+        const { commands, store, uninstall } = loadCommands();
+        try {
+            const secrets = createFakeSecretStorage();
+            await commands.runAddConnection(fakeExtCtx(secrets), {
+                name: async () => 'dev',
+                user: async () => 'hr',
+                connectString: async () => 'tcps://localhost:1522/FREEPDB1',
+                defaultSchema: async () => undefined,
+                walletLocation: async () => '/opt/wallet',
+                walletPassword: async () => 'walletsecret',
+                password: async () => 'hunter2'
+            });
+
+            assert.deepEqual(store['utplsql.connections'], [
+                { name: 'dev', user: 'hr', connectString: 'tcps://localhost:1522/FREEPDB1', defaultSchema: undefined, walletLocation: '/opt/wallet' }
+            ]);
+            assert.equal(await secrets.get('utplsql.walletPassword.dev'), 'walletsecret');
+        } finally {
+            uninstall();
+        }
+    });
+
+    it('warns when a wallet is configured but the connect string does not mention TCPS (issue #96)', async () => {
+        const { commands, messages, uninstall } = loadCommands();
+        try {
+            const secrets = createFakeSecretStorage();
+            await commands.runAddConnection(fakeExtCtx(secrets), {
+                name: async () => 'dev',
+                user: async () => 'hr',
+                connectString: async () => 'localhost:1521/FREEPDB1', // no tcps
+                defaultSchema: async () => undefined,
+                walletLocation: async () => '/opt/wallet',
+                walletPassword: async () => undefined,
+                password: async () => 'hunter2'
+            });
+
+            assert.ok(
+                messages.some((m) => m.kind === 'warning' && m.message.includes('does not mention TCPS')),
+                `expected a warning about the wallet not being used, got: ${JSON.stringify(messages)}`
+            );
+        } finally {
+            uninstall();
+        }
+    });
+
+    it('does not warn when the connect string uses tcps:// (issue #96)', async () => {
+        const { commands, messages, uninstall } = loadCommands();
+        try {
+            const secrets = createFakeSecretStorage();
+            await commands.runAddConnection(fakeExtCtx(secrets), {
+                name: async () => 'dev',
+                user: async () => 'hr',
+                connectString: async () => 'tcps://localhost:1522/FREEPDB1',
+                defaultSchema: async () => undefined,
+                walletLocation: async () => '/opt/wallet',
+                walletPassword: async () => undefined,
+                password: async () => 'hunter2'
+            });
+
+            assert.ok(!messages.some((m) => m.kind === 'warning'), `expected no warning, got: ${JSON.stringify(messages)}`);
+        } finally {
+            uninstall();
+        }
+    });
+
+    it('warns when the connect string only contains "tcps" as part of the hostname, not as its protocol (issue #96)', async () => {
+        const { commands, messages, uninstall } = loadCommands();
+        try {
+            const secrets = createFakeSecretStorage();
+            await commands.runAddConnection(fakeExtCtx(secrets), {
+                name: async () => 'dev',
+                user: async () => 'hr',
+                connectString: async () => 'tcpsprod-host.example.com:1521/FREEPDB1', // "tcps" substring, but not the protocol
+                defaultSchema: async () => undefined,
+                walletLocation: async () => '/opt/wallet',
+                walletPassword: async () => undefined,
+                password: async () => 'hunter2'
+            });
+
+            assert.ok(
+                messages.some((m) => m.kind === 'warning' && m.message.includes('does not mention TCPS')),
+                `expected a warning about the wallet not being used, got: ${JSON.stringify(messages)}`
+            );
+        } finally {
+            uninstall();
+        }
+    });
+
+    it('does not warn when the connect string uses a full descriptor with PROTOCOL=TCPS (issue #96)', async () => {
+        const { commands, messages, uninstall } = loadCommands();
+        try {
+            const secrets = createFakeSecretStorage();
+            await commands.runAddConnection(fakeExtCtx(secrets), {
+                name: async () => 'dev',
+                user: async () => 'hr',
+                connectString: async () =>
+                    '(DESCRIPTION=(ADDRESS=(PROTOCOL=TCPS)(HOST=localhost)(PORT=2484))(CONNECT_DATA=(SERVICE_NAME=FREEPDB1)))',
+                defaultSchema: async () => undefined,
+                walletLocation: async () => '/opt/wallet',
+                walletPassword: async () => undefined,
+                password: async () => 'hunter2'
+            });
+
+            assert.ok(!messages.some((m) => m.kind === 'warning'), `expected no warning, got: ${JSON.stringify(messages)}`);
+        } finally {
+            uninstall();
+        }
+    });
+
+    it('does not warn when no wallet is configured, regardless of the connect string (issue #96)', async () => {
+        const { commands, messages, uninstall } = loadCommands();
+        try {
+            const secrets = createFakeSecretStorage();
+            await commands.runAddConnection(fakeExtCtx(secrets), {
+                name: async () => 'dev',
+                user: async () => 'hr',
+                connectString: async () => 'localhost:1521/FREEPDB1',
+                defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
+                password: async () => 'hunter2'
+            });
+
+            assert.ok(!messages.some((m) => m.kind === 'warning'), `expected no warning, got: ${JSON.stringify(messages)}`);
+        } finally {
+            uninstall();
+        }
+    });
+
+    it('leaves no walletLocation and stores no wallet password when the wallet prompt is left empty (issue #83)', async () => {
+        const { commands, store, uninstall } = loadCommands();
+        try {
+            const secrets = createFakeSecretStorage();
+            await commands.runAddConnection(fakeExtCtx(secrets), {
+                name: async () => 'dev',
+                user: async () => 'hr',
+                connectString: async () => 'localhost:1521/FREEPDB1',
+                defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => 'should never be prompted for, let alone stored',
+                password: async () => 'hunter2'
+            });
+
+            assert.deepEqual(store['utplsql.connections'], [{ name: 'dev', user: 'hr', connectString: 'localhost:1521/FREEPDB1', defaultSchema: undefined }]);
+            assert.equal(await secrets.get('utplsql.walletPassword.dev'), undefined);
         } finally {
             uninstall();
         }
