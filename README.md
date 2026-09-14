@@ -70,7 +70,7 @@ Run **utPLSQL: Add Connection** from the Command Palette (`Ctrl+Shift+P`). You w
 | **User** | The database user that owns or can see the test packages. |
 | **Connect string** | Easy Connect (`host:1521/SERVICE`) or a TNS alias. Prefix with `tcps://` for a TLS-encrypted connection. Pick *Enter manually* if you have no `tnsnames.ora`. |
 | **Default schema** | Optional. Leave empty to use the connecting user's own schema. |
-| **Wallet directory** | Optional. Only needed for mutual TLS or an Autonomous Database wallet — leave empty otherwise. |
+| **Wallet directory** | Optional, for a `tcps://` connection. Must contain `ewallet.pem` — the only wallet file the Thin-mode driver reads. An Autonomous Database wallet download already includes it; a classic mutual-TLS wallet made via `orapki`/`mkstore` may need `orapki wallet export ... -pem` to produce one. |
 | **Wallet password** | Only asked if a wallet directory was given. Optional (an auto-login wallet needs none); stored in `SecretStorage`. |
 | **Password** | Stored in VS Code's `SecretStorage` — never in `settings.json`, never logged. |
 

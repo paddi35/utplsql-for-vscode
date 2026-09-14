@@ -193,6 +193,69 @@ describe('runAddConnection (issue #25: order prompts, persist last, catch duplic
         }
     });
 
+    it('warns when a wallet is configured but the connect string does not mention TCPS (issue #96)', async () => {
+        const { commands, messages, uninstall } = loadCommands();
+        try {
+            const secrets = createFakeSecretStorage();
+            await commands.runAddConnection(fakeExtCtx(secrets), {
+                name: async () => 'dev',
+                user: async () => 'hr',
+                connectString: async () => 'localhost:1521/FREEPDB1', // no tcps
+                defaultSchema: async () => undefined,
+                walletLocation: async () => '/opt/wallet',
+                walletPassword: async () => undefined,
+                password: async () => 'hunter2'
+            });
+
+            assert.ok(
+                messages.some((m) => m.kind === 'warning' && m.message.includes('does not mention TCPS')),
+                `expected a warning about the wallet not being used, got: ${JSON.stringify(messages)}`
+            );
+        } finally {
+            uninstall();
+        }
+    });
+
+    it('does not warn when the connect string uses tcps:// (issue #96)', async () => {
+        const { commands, messages, uninstall } = loadCommands();
+        try {
+            const secrets = createFakeSecretStorage();
+            await commands.runAddConnection(fakeExtCtx(secrets), {
+                name: async () => 'dev',
+                user: async () => 'hr',
+                connectString: async () => 'tcps://localhost:1522/FREEPDB1',
+                defaultSchema: async () => undefined,
+                walletLocation: async () => '/opt/wallet',
+                walletPassword: async () => undefined,
+                password: async () => 'hunter2'
+            });
+
+            assert.ok(!messages.some((m) => m.kind === 'warning'), `expected no warning, got: ${JSON.stringify(messages)}`);
+        } finally {
+            uninstall();
+        }
+    });
+
+    it('does not warn when no wallet is configured, regardless of the connect string (issue #96)', async () => {
+        const { commands, messages, uninstall } = loadCommands();
+        try {
+            const secrets = createFakeSecretStorage();
+            await commands.runAddConnection(fakeExtCtx(secrets), {
+                name: async () => 'dev',
+                user: async () => 'hr',
+                connectString: async () => 'localhost:1521/FREEPDB1',
+                defaultSchema: async () => undefined,
+                walletLocation: async () => undefined,
+                walletPassword: async () => undefined,
+                password: async () => 'hunter2'
+            });
+
+            assert.ok(!messages.some((m) => m.kind === 'warning'), `expected no warning, got: ${JSON.stringify(messages)}`);
+        } finally {
+            uninstall();
+        }
+    });
+
     it('leaves no walletLocation and stores no wallet password when the wallet prompt is left empty (issue #83)', async () => {
         const { commands, store, uninstall } = loadCommands();
         try {

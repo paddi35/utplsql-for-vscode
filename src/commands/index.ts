@@ -77,7 +77,14 @@ export interface AddConnectionPrompts {
     user(): Promise<string | undefined>;
     connectString(): Promise<string | undefined>;
     defaultSchema(): Promise<string | undefined>;
-    /** Wallet directory for mutual TLS / an Autonomous Database wallet — optional, only meaningful with a tcps:// connectString. */
+    /**
+     * Wallet directory for a tcps:// connectString — optional. Must contain
+     * ewallet.pem: node-oracledb's Thin mode reads no other wallet file
+     * (see sessionAtts.js's PEM_WALLET_FILE_NAME), not the classic
+     * cwallet.sso/ewallet.p12 pair a mutual-TLS wallet made via
+     * orapki/mkstore normally contains without an extra `-pem` export step.
+     * An Autonomous Database wallet download already includes ewallet.pem.
+     */
     walletLocation(): Promise<string | undefined>;
     /** Only prompted when walletLocation was given. Optional even then — an auto-login wallet needs no password. */
     walletPassword(location: string): Promise<string | undefined>;
@@ -111,7 +118,7 @@ const realAddConnectionPrompts: AddConnectionPrompts = {
         }),
     walletLocation: async () =>
         vscode.window.showInputBox({
-            prompt: 'Wallet directory for mutual TLS / an Autonomous Database wallet (optional; leave empty unless using tcps://)',
+            prompt: 'Wallet directory for a tcps:// connection — must contain ewallet.pem (optional; leave empty otherwise)',
             ignoreFocusOut: true
         }),
     walletPassword: async (location) =>
@@ -167,6 +174,24 @@ export async function runAddConnection(extCtx: vscode.ExtensionContext, prompts:
         }
         const walletLocation = await prompts.walletLocation();
         const walletPassword = walletLocation ? await prompts.walletPassword(walletLocation) : undefined;
+        if (walletLocation && !/tcps/i.test(connectString)) {
+            // node-oracledb's Thin-mode Easy-Connect parser defaults to
+            // protocol TCP and only reads the wallet file when the resolved
+            // protocol is TCPS (see ezConnectResolver.js/sessionAtts.js) --
+            // a wallet configured against anything else is silently never
+            // touched, connecting in the clear instead of over TLS (issue
+            // #83). This is a heuristic, not a hard gate: connectString may
+            // be a TNS alias whose own tnsnames.ora entry specifies
+            // PROTOCOL=TCPS with nothing visible here to check, so a profile
+            // that genuinely means to do that is only warned, never blocked.
+            void vscode.window.showWarningMessage(
+                `utPLSQL: connection '${name}' has a wallet directory configured, but its connect string does not mention TCPS. ` +
+                    'node-oracledb only uses the wallet for a tcps:// (or PROTOCOL=TCPS) connection -- as configured, this profile ' +
+                    "will connect in the clear without it, unless '" +
+                    connectString +
+                    "' is a TNS alias whose own tnsnames.ora entry specifies PROTOCOL=TCPS."
+            );
+        }
         const password = await prompts.password(name, user);
         if (password === undefined) {
             return;
