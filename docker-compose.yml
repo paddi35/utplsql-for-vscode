@@ -8,7 +8,7 @@ services:
     image: oracle-free-utplsql:23-slim
     container_name: oracle-utplsql
     ports:
-      - "1521:1521"
+      - "127.0.0.1:1521:1521"
     environment:
       ORACLE_PASSWORD: ${ORACLE_PASSWORD:-oracle}
       # Optionaler Anwendungsschema-User (auskommentieren, falls nicht benoetigt)
