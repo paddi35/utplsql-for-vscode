@@ -354,7 +354,7 @@ describe('.gitignore vs. .vscodeignore', () => {
 
 /**
  * capabilities.untrustedWorkspaces.supported: false is what makes it safe for
- * virtualSourcePath.ts's provideTextDocumentContent() to be registered
+ * virtualSource.ts's provideTextDocumentContent() to be registered
  * unconditionally at activation for the utplsql-source:// scheme: that
  * handler opens a pooled DB connection using the stored password for
  * *any* URI of that scheme the editor is handed -- one from a workspace
