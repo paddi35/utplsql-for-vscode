@@ -14,8 +14,9 @@
 # SYSDBA-Rechten ausfuehren. Ein '&' wird von SQL*Plus (SET DEFINE ON ist
 # Standard) auch innerhalb eines doppelt gequoteten Literals als Praefix
 # einer Substitutionsvariable gelesen und kann das Passwort verstuemmeln
-# oder die naechste Heredoc-Zeile als deren Eingabe konsumieren. Ein '@'
-# bricht die unquotierte user/password@//host-Verbindungszeichenkette.
+# oder die naechste Heredoc-Zeile als deren Eingabe konsumieren. Ein '@' oder
+# '/' bricht die unquotierte user/password@//host-Verbindungszeichenkette,
+# da '/' dort der User/Passwort-Trenner ist.
 #
 # Laeuft bewusst vor 10-install-utplsql.sh, damit ein ungueltiger Wert den
 # gesamten Start laut abbricht, statt sich erst spaeter als "Container ist
@@ -23,7 +24,12 @@
 # zeigen.
 set -Eeuo pipefail
 
-IDENTIFIER_RE='^[A-Za-z][A-Za-z0-9_$#]*$'
+# Oracle's unquoted-identifier length limit is 128 bytes (compatible >= 12.2,
+# the default for the gvenzl/oracle-free:23 image this Dockerfile builds on);
+# a longer value passes SQL*Plus's own free-form quoting here but fails with
+# ORA-00972 deep inside 10-install-utplsql.sh, defeating the fail-fast point
+# of this script.
+IDENTIFIER_RE='^[A-Za-z][A-Za-z0-9_$#]{0,127}$'
 
 validate_identifier() {
   local var_name="$1" value="$2"
@@ -35,8 +41,8 @@ validate_identifier() {
 
 validate_password() {
   local var_name="$1" value="$2"
-  if [[ "${value}" == *'"'* || "${value}" == *'&'* || "${value}" == *'@'* || "${value}" =~ [[:space:]] ]]; then
-    echo "CONTAINER: ERROR: ${var_name} contains a double quote, '&', '@', or whitespace/newline character, which breaks the SQL*Plus script it is substituted into." >&2
+  if [[ "${value}" == *'"'* || "${value}" == *'&'* || "${value}" == *'@'* || "${value}" == *'/'* || "${value}" =~ [[:space:]] ]]; then
+    echo "CONTAINER: ERROR: ${var_name} contains a double quote, '&', '@', '/', or whitespace/newline character, which breaks the SQL*Plus script it is substituted into." >&2
     exit 1
   fi
 }
