@@ -380,7 +380,9 @@ async function runOneProfile(
             }
             const event = parseEvent(row.itemType, row.text, (msg) => ctx.output.appendLine(msg));
             if (!event) {
-                ctx.output.appendLine(`utPLSQL: parseEvent returned undefined for itemType='${row.itemType}', raw text follows:\n${row.text}`);
+                ctx.output.appendLine(
+                    `utPLSQL: parseEvent returned undefined for itemType='${row.itemType}', raw text follows:\n${sanitizeTerminalText(row.text)}`
+                );
                 continue;
             }
             switch (event.type) {

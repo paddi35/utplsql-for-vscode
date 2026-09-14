@@ -136,7 +136,7 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
                 } else {
                     appendOutputCrlf(run, `--- ${profile} (${reporterName}) ---`);
                     appendOutputCrlf(run, result.output);
-                    ctx.output.appendLine(result.output);
+                    ctx.output.appendLine(sanitizeTerminalText(result.output));
                 }
                 group.items.forEach((i) => run.skipped(i));
             } catch (err) {
