@@ -7,9 +7,10 @@ import { runWithReporter } from '../db/reporterDao';
 import { UtplsqlContext } from './model';
 import { groupRequest } from './runHandler';
 import { readReporterOptions } from './reporterConfig';
+import { sanitizeTerminalText } from './terminalSanitize';
 
 function appendOutputCrlf(run: vscode.TestRun, text: string, item?: vscode.TestItem): void {
-    run.appendOutput(text.replace(/\r?\n/g, '\r\n') + '\r\n', undefined, item);
+    run.appendOutput(sanitizeTerminalText(text).replace(/\r?\n/g, '\r\n') + '\r\n', undefined, item);
 }
 
 /**
@@ -135,7 +136,7 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
                 } else {
                     appendOutputCrlf(run, `--- ${profile} (${reporterName}) ---`);
                     appendOutputCrlf(run, result.output);
-                    ctx.output.appendLine(result.output);
+                    ctx.output.appendLine(sanitizeTerminalText(result.output));
                 }
                 group.items.forEach((i) => run.skipped(i));
             } catch (err) {
