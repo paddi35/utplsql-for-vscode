@@ -78,14 +78,18 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
     const { randomOrder, randomOrderSeed } = readRandomOrderConfig();
     const htmlReportEnabled = vscode.workspace.getConfiguration('utplsql').get<boolean>('coverage.htmlReport');
     const reportsDir = vscode.Uri.joinPath(ctx.globalStorageUri, 'coverage-reports');
-    if (htmlReportEnabled) {
-        // Once per run, before any profile is processed — see
-        // clearPreviousReports' own doc comment for why this can't instead
-        // happen inside showHtmlReport, which runs once per profile.
-        await vscode.workspace.fs.createDirectory(reportsDir);
-        await clearPreviousReports(ctx, reportsDir);
-    }
     try {
+        if (htmlReportEnabled) {
+            // Once per run, before any profile is processed — see
+            // clearPreviousReports' own doc comment for why this can't
+            // instead happen inside showHtmlReport, which runs once per
+            // profile. Inside this try/finally (unlike the rest of the
+            // function's setup above) so a failure here — e.g. reportsDir
+            // can't be created — still reaches run.end() instead of leaving
+            // the TestRun stuck "in progress" in the Test Explorer forever.
+            await vscode.workspace.fs.createDirectory(reportsDir);
+            await clearPreviousReports(ctx, reportsDir);
+        }
         const grouped = await groupRequest(ctx, request);
         for (const [profile, group] of grouped) {
             if (token.isCancellationRequested) {
@@ -393,7 +397,18 @@ export async function loadDetailedCoverage(
  * so "Open in Browser" on that earlier notification would then fail. Once
  * per run instead still keeps at most one run's worth of reports lingering
  * between separate runs, instead of accumulating for the life of the
- * extension's storage.
+ * extension's storage. That still leaves a window within the same extension
+ * host: two runs (a second run started before the user answers a still-open
+ * "report is ready" notification from an earlier one) can interleave, and
+ * the second run's clearPreviousReports would otherwise delete a file the
+ * first run's notification still points at. pendingReportUris (below) closes
+ * that by having clearPreviousReports skip any file this extension host has
+ * written but not yet resolved (notification answered, dismissed, or
+ * errored) — see showHtmlReport. It does not cover a second VS Code *window*
+ * clearing the same globalStorageUri-backed directory from a separate
+ * extension host process, which has no way to see this in-memory set; that
+ * residual race is accepted, the same trade-off as sharing global storage
+ * across windows in the first place.
  *
  * Only the write is awaited, not the notification/open/save that follows —
  * this function's caller (runCoverage) awaits it before calling run.end(),
@@ -406,13 +421,20 @@ export async function loadDetailedCoverage(
  * an unanswered "report is ready" notification sits on screen — unlike a
  * webview opening instantly, that time is unbounded.
  */
+// Report files this extension host has written and shown a "report is
+// ready" notification for, but that notification hasn't been resolved yet —
+// see showHtmlReport and clearPreviousReports' own doc comment.
+const pendingReportUris = new Set<string>();
+
 async function clearPreviousReports(ctx: UtplsqlContext, reportsDir: vscode.Uri): Promise<void> {
     try {
         const entries = await vscode.workspace.fs.readDirectory(reportsDir);
         await Promise.all(
             entries
                 .filter(([name, type]) => type === vscode.FileType.File && name.startsWith('utplsql-coverage-') && name.endsWith('.html'))
-                .map(([name]) => vscode.workspace.fs.delete(vscode.Uri.joinPath(reportsDir, name)))
+                .map(([name]) => vscode.Uri.joinPath(reportsDir, name))
+                .filter((uri) => !pendingReportUris.has(uri.toString()))
+                .map((uri) => vscode.workspace.fs.delete(uri))
         );
     } catch (err) {
         // Best-effort: a report we fail to clean up here just means one
@@ -427,6 +449,9 @@ async function showHtmlReport(ctx: UtplsqlContext, html: string, reportsDir: vsc
     const tempUri = vscode.Uri.joinPath(reportsDir, `utplsql-coverage-${randomUUID()}.html`);
     await vscode.workspace.fs.writeFile(tempUri, buffer);
     ctx.output.appendLine(`utPLSQL: coverage HTML report written to ${tempUri.fsPath}`);
+
+    const uriKey = tempUri.toString();
+    pendingReportUris.add(uriKey);
 
     const openInBrowser = 'Open in Browser';
     const saveAs = 'Save As…';
@@ -454,5 +479,6 @@ async function showHtmlReport(ctx: UtplsqlContext, html: string, reportsDir: vsc
             // here would otherwise surface as an unhandled rejection warning
             // instead of a normal, attributable output-channel line.
             ctx.output.appendLine(`utPLSQL: coverage HTML report — opening/saving failed: ${String(err)}`);
-        });
+        })
+        .then(() => pendingReportUris.delete(uriKey));
 }
