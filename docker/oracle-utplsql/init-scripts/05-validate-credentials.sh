@@ -6,10 +6,16 @@
 # Namen werden als nackte Bezeichner bzw. als Positionsargument fuer
 # install_headless.sql eingesetzt; ein Passwort landet entweder ebenfalls als
 # Positionsargument dort, oder in einem doppelt gequoteten "IDENTIFIED BY"-
-# Literal. Unvalidiert kann ein Passwort mit Leerzeichen/Newline ein
-# Positionsargument aufspalten bzw. eine neue Anweisung einschleusen, oder
-# (im doppelt gequoteten Fall) per eingebettetem Anfuehrungszeichen aus dem
-# Literal ausbrechen und beliebiges SQL mit SYSDBA-Rechten ausfuehren.
+# Literal, oder unquotiert in einer sqlplus user/password@//host-Verbindungs-
+# zeichenkette (20-install-utplsql-tests.sh). Unvalidiert kann ein Passwort
+# mit Leerzeichen/Newline ein Positionsargument aufspalten bzw. eine neue
+# Anweisung einschleusen, oder (im doppelt gequoteten Fall) per eingebettetem
+# Anfuehrungszeichen aus dem Literal ausbrechen und beliebiges SQL mit
+# SYSDBA-Rechten ausfuehren. Ein '&' wird von SQL*Plus (SET DEFINE ON ist
+# Standard) auch innerhalb eines doppelt gequoteten Literals als Praefix
+# einer Substitutionsvariable gelesen und kann das Passwort verstuemmeln
+# oder die naechste Heredoc-Zeile als deren Eingabe konsumieren. Ein '@'
+# bricht die unquotierte user/password@//host-Verbindungszeichenkette.
 #
 # Laeuft bewusst vor 10-install-utplsql.sh, damit ein ungueltiger Wert den
 # gesamten Start laut abbricht, statt sich erst spaeter als "Container ist
@@ -29,8 +35,8 @@ validate_identifier() {
 
 validate_password() {
   local var_name="$1" value="$2"
-  if [[ "${value}" == *'"'* || "${value}" =~ [[:space:]] ]]; then
-    echo "CONTAINER: ERROR: ${var_name} contains a double quote or whitespace/newline character, which breaks the SQL*Plus script it is substituted into." >&2
+  if [[ "${value}" == *'"'* || "${value}" == *'&'* || "${value}" == *'@'* || "${value}" =~ [[:space:]] ]]; then
+    echo "CONTAINER: ERROR: ${var_name} contains a double quote, '&', '@', or whitespace/newline character, which breaks the SQL*Plus script it is substituted into." >&2
     exit 1
   fi
 }
