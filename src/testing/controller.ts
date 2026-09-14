@@ -345,7 +345,7 @@ export function createUtplsqlContext(extCtx: vscode.ExtensionContext, sourceInde
     const output = vscode.window.createOutputChannel('utPLSQL');
     setPerfOutputChannel(output);
     setPoolOutputChannel(output);
-    const ctx: UtplsqlContext = { controller, meta, output, secrets: extCtx.secrets, sourceIndex };
+    const ctx: UtplsqlContext = { controller, meta, output, secrets: extCtx.secrets, sourceIndex, globalStorageUri: extCtx.globalStorageUri };
 
     const reportResolveError = (item: vscode.TestItem, err: unknown): void => {
         const message = err instanceof Error ? err.message : String(err);
