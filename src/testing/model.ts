@@ -40,4 +40,5 @@ export interface UtplsqlContext {
     output: vscode.OutputChannel;
     secrets: vscode.SecretStorage;
     sourceIndex: SourceIndex;
+    globalStorageUri: vscode.Uri;
 }

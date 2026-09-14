@@ -1,5 +1,5 @@
 import oracledb, { Connection, ResultSet } from 'oracledb';
-import { DEFAULT_INITIAL_TIMEOUT_SEC, DEFAULT_NEXT_EVENT_TIMEOUT_SEC, cancelConsumer, newReporterId } from './realtimeDao';
+import { DEFAULT_INITIAL_TIMEOUT_SEC, DEFAULT_NEXT_EVENT_TIMEOUT_SEC, cancelConsumer, newReporterId, validateIdentifier } from './realtimeDao';
 
 function quoteLiteral(value: string): string {
     return `'${value.replace(/'/g, "''")}'`;
@@ -18,6 +18,7 @@ export interface RunWithReporterOptions {
 
 /** Pure SQL builder for runWithReporter's producer block, split out so the a_color_console/a_client_character_set wiring is unit-testable without a real connection. */
 export function buildRunWithReporterSql(id: string, reporterType: string, paths: string[], options: RunWithReporterOptions = {}): string {
+    validateIdentifier(reporterType, 'reporter type');
     // No separate output_buffer.init() call: set_reporter_id() already runs
     // output_buffer.init(a_reporter_id) internally (see realtimeDao.ts's
     // reportersClause doc comment) — calling init() again afterward with no
@@ -30,7 +31,7 @@ export function buildRunWithReporterSql(id: string, reporterType: string, paths:
     return `DECLARE
    l_reporter ${reporterType} := ${reporterType}();
 BEGIN
-   l_reporter.set_reporter_id('${id}');
+   l_reporter.set_reporter_id(${quoteLiteral(id)});
    ut_runner.run(${runArgs});
 END;`;
 }
@@ -153,6 +154,14 @@ export async function runWithReporter(
     if (token?.isCancellationRequested) {
         return { output: '', cancelled: true };
     }
+    // buildRunWithReporterSql below already refuses an invalid reporterType
+    // before returning produceSql, which today also protects consumeSql —
+    // built further down, from the same reporterType, and never through a
+    // validated builder of its own — purely because it happens to run
+    // second in this function. Checked again here so that guarantee holds
+    // even if the two statements are ever reordered, instead of resting on
+    // source order alone.
+    validateIdentifier(reporterType, 'reporter type');
 
     const id = newReporterId();
     const produceSql = buildRunWithReporterSql(id, reporterType, paths, options);
