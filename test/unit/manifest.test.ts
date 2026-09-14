@@ -24,6 +24,7 @@ interface PackageManifest {
         commands: { command: string; title: string }[];
         configuration: { properties: Record<string, unknown> };
     };
+    capabilities?: { untrustedWorkspaces?: { supported?: boolean } };
 }
 
 function loadPackageJson(): PackageManifest {
@@ -365,9 +366,7 @@ describe('.gitignore vs. .vscodeignore', () => {
  */
 describe('untrusted workspace support', () => {
     it('capabilities.untrustedWorkspaces.supported stays false', () => {
-        const pkg = JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, 'utf8')) as {
-            capabilities?: { untrustedWorkspaces?: { supported?: boolean } };
-        };
+        const pkg = loadPackageJson();
         assert.equal(
             pkg.capabilities?.untrustedWorkspaces?.supported,
             false,
