@@ -1,5 +1,16 @@
 import * as vscode from 'vscode';
-import { addProfile, ConnectionProfile, getProfile, readProfiles, removeProfile, setPassword, validateProfileName } from '../db/connections';
+import {
+    addProfile,
+    connectStringDeclaresTcps,
+    ConnectionProfile,
+    deleteWalletPassword,
+    getProfile,
+    readProfiles,
+    removeProfile,
+    setPassword,
+    setWalletPassword,
+    validateProfileName
+} from '../db/connections';
 import { getPool, recyclePool, validateSchemaName, describeConnectionError } from '../db/pool';
 import { forgetProfile, getSuiteRows } from '../testing/controller';
 import * as dao from '../db/utplsqlDao';
@@ -33,7 +44,10 @@ async function pickConnectString(): Promise<string | undefined> {
             }
         }
     }
-    return vscode.window.showInputBox({ prompt: 'Easy-Connect string or TNS alias', ignoreFocusOut: true });
+    return vscode.window.showInputBox({
+        prompt: 'Easy-Connect string or TNS alias — prefix with tcps:// for a TLS-encrypted connection',
+        ignoreFocusOut: true
+    });
 }
 
 async function pickProfile(promptTitle: string): Promise<string | undefined> {
@@ -64,6 +78,17 @@ export interface AddConnectionPrompts {
     user(): Promise<string | undefined>;
     connectString(): Promise<string | undefined>;
     defaultSchema(): Promise<string | undefined>;
+    /**
+     * Wallet directory for a tcps:// connectString — optional. Must contain
+     * ewallet.pem: node-oracledb's Thin mode reads no other wallet file
+     * (see sessionAtts.js's PEM_WALLET_FILE_NAME), not the classic
+     * cwallet.sso/ewallet.p12 pair a mutual-TLS wallet made via
+     * orapki/mkstore normally contains without an extra `-pem` export step.
+     * An Autonomous Database wallet download already includes ewallet.pem.
+     */
+    walletLocation(): Promise<string | undefined>;
+    /** Only prompted when walletLocation was given. Optional even then — an auto-login wallet needs no password. */
+    walletPassword(location: string): Promise<string | undefined>;
     password(name: string, user: string): Promise<string | undefined>;
 }
 
@@ -91,6 +116,17 @@ const realAddConnectionPrompts: AddConnectionPrompts = {
             prompt: 'Default schema (optional, defaults to the DB user)',
             ignoreFocusOut: true,
             validateInput: (value) => (value ? schemaValidationMessage(value) : undefined)
+        }),
+    walletLocation: async () =>
+        vscode.window.showInputBox({
+            prompt: 'Wallet directory for a tcps:// connection — must contain ewallet.pem (optional; leave empty otherwise)',
+            ignoreFocusOut: true
+        }),
+    walletPassword: async (location) =>
+        vscode.window.showInputBox({
+            prompt: `Wallet password for '${location}' (optional — leave empty for an auto-login wallet; stored in SecretStorage)`,
+            password: true,
+            ignoreFocusOut: true
         }),
     password: async (name, user) =>
         vscode.window.showInputBox({
@@ -137,11 +173,36 @@ export async function runAddConnection(extCtx: vscode.ExtensionContext, prompts:
         if (defaultSchema) {
             validateSchemaName(defaultSchema);
         }
+        const walletLocation = await prompts.walletLocation();
+        const walletPassword = walletLocation ? await prompts.walletPassword(walletLocation) : undefined;
+        if (walletLocation && !connectStringDeclaresTcps(connectString)) {
+            // See connectStringDeclaresTcps' own doc comment (connections.ts)
+            // for why this is a heuristic, not a hard gate: connectString may
+            // be a TNS alias whose own tnsnames.ora entry specifies
+            // PROTOCOL=TCPS with nothing visible here to check, so a profile
+            // that genuinely means to do that is only warned, never blocked.
+            void vscode.window.showWarningMessage(
+                `utPLSQL: connection '${name}' has a wallet directory configured, but its connect string does not mention TCPS. ` +
+                    'node-oracledb only uses the wallet for a tcps:// (or PROTOCOL=TCPS) connection -- as configured, this profile ' +
+                    "will connect in the clear without it, unless '" +
+                    connectString +
+                    "' is a TNS alias whose own tnsnames.ora entry specifies PROTOCOL=TCPS."
+            );
+        }
         const password = await prompts.password(name, user);
         if (password === undefined) {
             return;
         }
-        await addProfile({ name, user, connectString, defaultSchema: defaultSchema || undefined });
+        await addProfile({
+            name,
+            user,
+            connectString,
+            defaultSchema: defaultSchema || undefined,
+            ...(walletLocation ? { walletLocation } : {})
+        });
+        if (walletLocation && walletPassword) {
+            await setWalletPassword(extCtx.secrets, name, walletPassword);
+        }
         if (password) {
             await setPassword(extCtx.secrets, name, password);
             vscode.window.showInformationMessage(`utPLSQL: connection '${name}' added.`);
@@ -184,6 +245,35 @@ export function registerConnectionCommands(extCtx: vscode.ExtensionContext): voi
             // issue #19's most confusing symptom (no reload needed after this).
             await forgetProfile(name);
             vscode.window.showInformationMessage(`utPLSQL: password for '${name}' stored.`);
+        }),
+
+        vscode.commands.registerCommand('utplsql.setWalletPassword', async () => {
+            const name = await pickProfile('Select connection profile');
+            if (!name) {
+                return;
+            }
+            const profile = getProfile(name);
+            if (!profile?.walletLocation) {
+                vscode.window.showErrorMessage(`utPLSQL: connection '${name}' has no wallet directory configured.`);
+                return;
+            }
+            const password = await vscode.window.showInputBox({
+                prompt: `Wallet password for '${name}' (leave empty for an auto-login wallet)`,
+                password: true,
+                ignoreFocusOut: true
+            });
+            if (password === undefined) {
+                return;
+            }
+            if (password) {
+                await setWalletPassword(extCtx.secrets, name, password);
+            } else {
+                await deleteWalletPassword(extCtx.secrets, name);
+            }
+            // Same reasoning as utplsql.setPassword above: the cached pool (if
+            // any) was built with the old wallet password.
+            await forgetProfile(name);
+            vscode.window.showInformationMessage(`utPLSQL: wallet password for '${name}' ${password ? 'stored' : 'cleared'}.`);
         }),
 
         vscode.commands.registerCommand('utplsql.removeConnection', async () => {

@@ -1,5 +1,5 @@
 import oracledb from 'oracledb';
-import { ConnectionProfile, getPassword } from './connections';
+import { ConnectionProfile, connectStringDeclaresTcps, getPassword, getWalletPassword } from './connections';
 import { resolveTnsAdminDirWithSource } from './tnsnames';
 import * as vscode from 'vscode';
 
@@ -164,7 +164,27 @@ export async function getPool(profile: ConnectionProfile, secrets: vscode.Secret
         throw new Error(`No password stored for connection '${profile.name}'. Run "utPLSQL: Set Password for Connection" first.`);
     }
     const configDir = resolveAndLogTnsAdminDir(profile.name);
+    // The addConnection wizard warns about this same mismatch at entry
+    // (commands/index.ts), but that only fires for a profile created through
+    // the wizard — one added by hand in settings.json, or edited after the
+    // fact to add walletLocation or change connectString, reaches pool
+    // creation with nothing having checked it. Logged rather than a
+    // showWarningMessage popup: getPool() runs on every test run once the
+    // pool is (re)created, and pool.ts otherwise only logs to outputRef
+    // (see resolveAndLogTnsAdminDir above), never pops up its own dialogs.
+    if (profile.walletLocation && !connectStringDeclaresTcps(profile.connectString)) {
+        outputRef?.appendLine(
+            `utPLSQL: pool for '${profile.name}' — a wallet directory is configured, but connectString does not declare TCPS; ` +
+                'node-oracledb only uses the wallet for a tcps:// (or PROTOCOL=TCPS) connection, so this profile will connect ' +
+                'in the clear without it, unless it is a TNS alias whose own tnsnames.ora entry specifies PROTOCOL=TCPS.'
+        );
+    }
     const schema = profile.defaultSchema ? validateSchemaName(profile.defaultSchema) : undefined;
+    // walletPassword is optional even with a walletLocation set — an
+    // auto-login wallet (cwallet.sso) needs none. node-oracledb's Thin mode
+    // reads walletLocation/walletPassword straight from PoolAttributes,
+    // no initOracleClient()/Thick mode involved.
+    const walletPassword = profile.walletLocation ? await getWalletPassword(secrets, profile.name) : undefined;
     const pool = await oracledb.createPool({
         user: profile.user,
         password,
@@ -195,7 +215,9 @@ export async function getPool(profile: ConnectionProfile, secrets: vscode.Secret
                   }
               }
             : {}),
-        ...(configDir ? { configDir } : {})
+        ...(configDir ? { configDir } : {}),
+        ...(profile.walletLocation ? { walletLocation: profile.walletLocation } : {}),
+        ...(walletPassword ? { walletPassword } : {})
     });
     pools.set(profile.name, pool);
     return pool;
