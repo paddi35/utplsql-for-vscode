@@ -24,6 +24,7 @@ interface PackageManifest {
         commands: { command: string; title: string }[];
         configuration: { properties: Record<string, unknown> };
     };
+    capabilities?: { untrustedWorkspaces?: { supported?: boolean } };
 }
 
 function loadPackageJson(): PackageManifest {
@@ -349,5 +350,29 @@ describe('.gitignore vs. .vscodeignore', () => {
                 `.gitignore hides ${dir}/ but .vscodeignore does not list '${dir}/**', so it would be published in the .vsix`
             );
         }
+    });
+});
+
+/**
+ * capabilities.untrustedWorkspaces.supported: false is what makes it safe for
+ * virtualSource.ts's provideTextDocumentContent() to be registered
+ * unconditionally at activation for the utplsql-source:// scheme: that
+ * handler opens a pooled DB connection using the stored password for
+ * *any* URI of that scheme the editor is handed -- one from a workspace
+ * file, a .vscode configuration entry, or another extension. Without this
+ * flag, that handler would also run in a workspace the user has not decided
+ * to trust. Nothing else in the extension enforces this, so a future
+ * package.json edit could drop it silently (issue #79).
+ */
+describe('untrusted workspace support', () => {
+    it('capabilities.untrustedWorkspaces.supported stays false', () => {
+        const pkg = loadPackageJson();
+        assert.equal(
+            pkg.capabilities?.untrustedWorkspaces?.supported,
+            false,
+            "package.json's capabilities.untrustedWorkspaces.supported must stay false -- it is what keeps " +
+                "utplsql-source://'s provideTextDocumentContent() (which opens a DB connection with the stored " +
+                'password for any URI of that scheme) from running in an untrusted workspace.'
+        );
     });
 });
