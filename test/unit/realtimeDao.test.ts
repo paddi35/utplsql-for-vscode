@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
-import { buildProduceSql, CoverageOptions } from '../../src/db/realtimeDao';
+import { Connection } from 'oracledb';
+import { buildProduceSql, consumeNamedReporter, CoverageOptions } from '../../src/db/realtimeDao';
+
+/** A Connection double whose every method fails the test if called — proves a code path never touches it. */
+function unusedConnection(): Connection {
+    const fail = (name: string) => async () => {
+        throw new Error(`${name}() should not have been called`);
+    };
+    return { execute: fail('execute') } as unknown as Connection;
+}
 
 describe('buildProduceSql', () => {
     it('quotes run paths and omits a_tags when none are given', () => {
@@ -126,5 +135,43 @@ describe('buildProduceSql', () => {
             fileMappings: []
         };
         assert.throws(() => buildProduceSql('abc123', ['UT3'], { coverage }), /invalid include object/);
+    });
+
+    // reporter/additionalReporter are typed as a fixed string-literal union
+    // today, so the TS compiler already rejects anything else at every real
+    // call site — these two tests exercise the runtime guard defending
+    // against a value that reaches here despite that (a future free-text
+    // setting, or a value read from disk that bypasses the type checker),
+    // hence the `as unknown as CoverageOptions['reporter']` casts below.
+
+    it('rejects a coverage.reporter that is not a plain identifier', () => {
+        const coverage: CoverageOptions = {
+            reporter: "ut_coverage_sonar_reporter'); EXEC SOME_PROC; --" as unknown as CoverageOptions['reporter'],
+            fileMappings: []
+        };
+        assert.throws(() => buildProduceSql('abc123', ['UT3'], { coverage }), /invalid coverage reporter/);
+    });
+
+    it('rejects a coverage.additionalReporter that is not a plain identifier', () => {
+        const coverage: CoverageOptions = {
+            reporter: 'ut_coverage_sonar_reporter',
+            additionalReporter: "ut_coverage_cobertura_reporter'); EXEC SOME_PROC; --" as unknown as CoverageOptions['additionalReporter'],
+            fileMappings: []
+        };
+        assert.throws(() => buildProduceSql('abc123', ['UT3'], { coverage }), /invalid additional coverage reporter/);
+    });
+
+    it('escapes an id containing an apostrophe instead of breaking out of the literal', () => {
+        const { sql } = buildProduceSql("abc' --", ['UT3']);
+        assert.match(sql, /set_reporter_id\('abc'' --'\)/);
+    });
+});
+
+describe('consumeNamedReporter', () => {
+    it('rejects a reporter type that is not a plain identifier before touching the connection', async () => {
+        await assert.rejects(
+            consumeNamedReporter(unusedConnection(), "ut_junit_reporter(); harmful_call; --", 'abc123'),
+            /invalid reporter type/
+        );
     });
 });

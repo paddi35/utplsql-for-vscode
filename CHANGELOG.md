@@ -6,6 +6,11 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
 
 ### Added
 
+- **Connection profiles can now configure a wallet** (`walletLocation`, optional `walletPassword`
+  stored in `SecretStorage`) for mutual TLS or an Autonomous Database connection. "Add Connection"
+  asks for both after the default schema; "Set Wallet Password for Connection" updates or clears
+  the password later. The connect-string prompt now also mentions `tcps://` for a plain
+  TLS-encrypted connection that needs no wallet.
 - **"Run with Reporter (Export)" and "Generate Test Package" are now on the Test Explorer's own
   right-click menu**, on any item that stands for a database object. They act on the item that was
   clicked rather than asking again which object was meant, which is what made them awkward to reach

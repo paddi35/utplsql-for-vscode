@@ -113,8 +113,17 @@ async function withExcludedFramework<T>(fn: () => Promise<T>): Promise<T> {
     }
 }
 
-function listCoverageHtmlFiles(): Set<string> {
-    return new Set(fs.readdirSync(os.tmpdir()).filter((f) => /^utplsql-coverage-.*\.html$/.test(f)));
+/** Mirrors coverage.ts's showHtmlReport: reports now live under global storage, not the OS temp dir — see issue #2's fix. */
+function coverageReportsDir(ctx: UtplsqlContext): string {
+    return path.join(ctx.globalStorageUri.fsPath, 'coverage-reports');
+}
+
+function listCoverageHtmlFiles(ctx: UtplsqlContext): Set<string> {
+    const dir = coverageReportsDir(ctx);
+    if (!fs.existsSync(dir)) {
+        return new Set();
+    }
+    return new Set(fs.readdirSync(dir).filter((f) => /^utplsql-coverage-.*\.html$/.test(f)));
 }
 
 /**
@@ -283,7 +292,7 @@ async function testCoberturaAdditionalReporterProducesFile(ctx: UtplsqlContext, 
  * From the agent that fixed issue #13 (coverage.ts's showHtmlReport now
  * writes a temp file and offers to open it in the browser, instead of
  * rendering the report in an extension-host webview) — adapted to this
- * file's helper style and fixed to diff the temp directory's contents
+ * file's helper style and fixed to diff the reports directory's contents
  * before/after the run instead of `files.sort().pop()`: the written
  * filenames are `utplsql-coverage-${randomUUID()}.html`, and a random UUID's
  * lexicographic sort order has no relationship to write order, so
@@ -295,7 +304,7 @@ async function testCoberturaAdditionalReporterProducesFile(ctx: UtplsqlContext, 
 async function testCoverageHtmlReportWritesFileInsteadOfWebview(ctx: UtplsqlContext, pkg: vscode.TestItem): Promise<void> {
     await vscode.workspace.getConfiguration('utplsql').update('coverage.htmlReport', true, vscode.ConfigurationTarget.Global);
     const tabsBefore = vscode.window.tabGroups.all.flatMap((g) => g.tabs).length;
-    const before = listCoverageHtmlFiles();
+    const before = listCoverageHtmlFiles(ctx);
     const cts = new vscode.CancellationTokenSource();
     try {
         await withExcludedFramework(() => runCoverage(ctx, new vscode.TestRunRequest([pkg]), cts.token));
@@ -305,10 +314,10 @@ async function testCoverageHtmlReportWritesFileInsteadOfWebview(ctx: UtplsqlCont
     }
 
     assert.equal(vscode.window.tabGroups.all.flatMap((g) => g.tabs).length, tabsBefore, 'no webview panel/tab should be created');
-    const after = listCoverageHtmlFiles();
+    const after = listCoverageHtmlFiles(ctx);
     const newFiles = [...after].filter((f) => !before.has(f));
-    assert.equal(newFiles.length, 1, `expected exactly one new utplsql-coverage-*.html file under the OS temp dir, got: ${JSON.stringify(newFiles)}`);
-    const content = fs.readFileSync(path.join(os.tmpdir(), newFiles[0]), 'utf8');
+    assert.equal(newFiles.length, 1, `expected exactly one new utplsql-coverage-*.html file under the extension's coverage-reports storage directory, got: ${JSON.stringify(newFiles)}`);
+    const content = fs.readFileSync(path.join(coverageReportsDir(ctx), newFiles[0]), 'utf8');
     assert.ok(content.includes('Content-Security-Policy'), 'expected the hardened CSP meta tag in the written file');
 }
 
@@ -334,7 +343,7 @@ async function testCoverageHtmlReportWritesFileInsteadOfWebview(ctx: UtplsqlCont
  */
 async function testCoverageHtmlReportPreservesXssPayload(ctx: UtplsqlContext, xssPkg: vscode.TestItem): Promise<void> {
     await vscode.workspace.getConfiguration('utplsql').update('coverage.htmlReport', true, vscode.ConfigurationTarget.Global);
-    const before = listCoverageHtmlFiles();
+    const before = listCoverageHtmlFiles(ctx);
     const cts = new vscode.CancellationTokenSource();
     // The extension reports a failed coverage run into its output channel and
     // carries on, so without capturing it a failure here is just "no file",
@@ -358,7 +367,7 @@ async function testCoverageHtmlReportPreservesXssPayload(ctx: UtplsqlContext, xs
         await vscode.workspace.getConfiguration('utplsql').update('coverage.htmlReport', false, vscode.ConfigurationTarget.Global);
     }
 
-    const after = listCoverageHtmlFiles();
+    const after = listCoverageHtmlFiles(ctx);
     const newFiles = [...after].filter((f) => !before.has(f));
     assert.equal(
         newFiles.length,
@@ -366,7 +375,7 @@ async function testCoverageHtmlReportPreservesXssPayload(ctx: UtplsqlContext, xs
         `expected exactly one new utplsql-coverage-*.html file for the XSS-fixture run, got: ${JSON.stringify(newFiles)}.` +
             ` Extension output during the run:\n${logged.join('\n')}`
     );
-    const content = fs.readFileSync(path.join(os.tmpdir(), newFiles[0]), 'utf8');
+    const content = fs.readFileSync(path.join(coverageReportsDir(ctx), newFiles[0]), 'utf8');
     assert.ok(content.includes('Content-Security-Policy'), 'expected the hardened CSP meta tag in the written file');
 
     // The object was dropped deliberately and the user was told why. A

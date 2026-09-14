@@ -92,6 +92,10 @@
               "defaultSchema": {
                 "type": "string",
                 "description": "Optionales abweichendes Schema für die Discovery."
+              },
+              "walletLocation": {
+                "type": "string",
+                "description": "Optionales Wallet-Verzeichnis für mTLS bzw. eine Autonomous-Database-Verbindung (nur relevant zusammen mit einem tcps://-connectString). Das Wallet-Passwort (falls vorhanden) wird separat im SecretStorage abgelegt (utplsql.setWalletPassword)."
               }
             }
           }
@@ -255,6 +259,10 @@
       {
         "command": "utplsql.setPassword",
         "title": "utPLSQL: Set Password for Connection"
+      },
+      {
+        "command": "utplsql.setWalletPassword",
+        "title": "utPLSQL: Set Wallet Password for Connection"
       },
       {
         "command": "utplsql.removeConnection",
