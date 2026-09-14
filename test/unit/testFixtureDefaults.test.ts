@@ -43,20 +43,55 @@ function jsDefault(source: string, envVar: string): string {
     return match![1];
 }
 
-/** Extracts `<default>` from a bash `"${<envVar>:-<default>}"` expression. */
+/**
+ * Extracts `<default>` from a bash `"${<envVar>:-<default>}"` expression.
+ *
+ * Counts brace depth from just past `${<envVar>:-` instead of matching up to
+ * the first `}` with `[^}]+`: a default that is itself another parameter
+ * expansion -- `${UTPLSQL_SCHEMA_PASSWORD:-${ORACLE_PASSWORD}}`, exactly the
+ * shape 10-install-utplsql.sh and 16-create-unprivileged-user.sh both use --
+ * has a `}` of its own before the one that actually closes the outer
+ * expansion, which `[^}]+` stops at, returning the truncated, unbalanced
+ * `${ORACLE_PASSWORD` instead of resolving the real default.
+ */
 function bashDefault(source: string, envVar: string): string {
-    const re = new RegExp(`\\$\\{${envVar}:-([^}]+)\\}`);
-    const match = re.exec(source);
-    assert.ok(match, `expected to find '\${${envVar}:-<default>}' in the source`);
-    return match![1];
+    const marker = `\${${envVar}:-`;
+    const start = source.indexOf(marker);
+    assert.ok(start !== -1, `expected to find '\${${envVar}:-<default>}' in the source`);
+    const contentStart = start + marker.length;
+    let depth = 1;
+    let i = contentStart;
+    while (i < source.length && depth > 0) {
+        if (source[i] === '{') depth++;
+        else if (source[i] === '}') depth--;
+        if (depth > 0) i++;
+    }
+    assert.ok(depth === 0, `expected a closing '}' for '\${${envVar}:-<default>}' in the source`);
+    return source.slice(contentStart, i);
 }
 
-/** Extracts `<value>` from a GitHub Actions `<envVar>: <value>` line inside an env: block. */
+/**
+ * Extracts `<value>` from a GitHub Actions `<envVar>: <value>` line inside an
+ * env: block, unwrapping YAML quoting and stripping a trailing inline `#`
+ * comment so this matches jsDefault's bare, unquoted literal regardless of
+ * how the workflow file happens to be formatted.
+ */
 function workflowEnvValue(source: string, envVar: string): string {
     const re = new RegExp(`^\\s*${envVar}:\\s*(.+)$`, 'm');
     const match = re.exec(source);
     assert.ok(match, `expected to find '${envVar}: <value>' in the source`);
-    return match![1].trim();
+    const raw = match![1].trim();
+    if (raw.startsWith('"') || raw.startsWith("'")) {
+        const quote = raw[0];
+        const closingQuote = raw.indexOf(quote, 1);
+        assert.ok(closingQuote !== -1, `expected a closing ${quote} for ${envVar}'s quoted value in the source`);
+        return raw.slice(1, closingQuote);
+    }
+    // Unquoted: YAML only treats '#' as a comment when preceded by
+    // whitespace, so a bare '#' inside the value itself (not the case for
+    // any default here, but kept correct) is left alone.
+    const commentStart = raw.search(/\s#/);
+    return (commentStart === -1 ? raw : raw.slice(0, commentStart)).trim();
 }
 
 describe('integration test fixture defaults match the docker fixture they describe', () => {
@@ -123,5 +158,52 @@ describe('integration test fixture defaults match the docker fixture they descri
         const port = jsDefault(runTests, 'UTPLSQL_IT_PORT');
         const service = jsDefault(runTests, 'UTPLSQL_IT_SERVICE');
         assert.equal(`${host}:${port}/${service}`, jsDefault(dbTs, 'UTPLSQL_IT_CONNECT_STRING'));
+    });
+
+    it("UTPLSQL_SCHEMA_PASSWORD's default correctly resolves the nested \${ORACLE_PASSWORD} expansion instead of truncating it", () => {
+        // Regression test for bashDefault's earlier [^}]+ regex, which
+        // stopped at the first '}' -- the one closing ${ORACLE_PASSWORD} --
+        // and returned the unbalanced '${ORACLE_PASSWORD' instead of the
+        // full nested expansion.
+        assert.equal(bashDefault(installUtplsql, 'UTPLSQL_SCHEMA_PASSWORD'), '${ORACLE_PASSWORD}');
+    });
+
+    it("UTPLSQL_IT_UNPRIV_PASSWORD's default correctly resolves the nested \${ORACLE_PASSWORD} expansion instead of truncating it", () => {
+        assert.equal(bashDefault(createUnprivUser, 'UTPLSQL_IT_UNPRIV_PASSWORD'), '${ORACLE_PASSWORD}');
+    });
+});
+
+describe('bashDefault (balanced-brace parsing)', () => {
+    it('resolves a default that is itself another parameter expansion, not just the text up to the first }', () => {
+        assert.equal(bashDefault('X="${FOO:-${BAR}}"', 'FOO'), '${BAR}');
+    });
+
+    it('still resolves a plain, non-nested default as before', () => {
+        assert.equal(bashDefault('X="${FOO:-plain}"', 'FOO'), 'plain');
+    });
+
+    it('throws when the expansion is never closed', () => {
+        assert.throws(() => bashDefault('X="${FOO:-${BAR}"', 'FOO'), /expected a closing/);
+    });
+});
+
+describe('workflowEnvValue (YAML quoting/comment handling)', () => {
+    it('strips a trailing inline comment from an unquoted value', () => {
+        assert.equal(workflowEnvValue('  UTPLSQL_IT_USER: ut3  # matches db.ts default\n', 'UTPLSQL_IT_USER'), 'ut3');
+    });
+
+    it('unwraps a double-quoted value, ignoring a comment after the closing quote', () => {
+        assert.equal(
+            workflowEnvValue('  UTPLSQL_IT_CONNECT_STRING: "localhost:1521/FREEPDB1"  # see docker-compose.yml\n', 'UTPLSQL_IT_CONNECT_STRING'),
+            'localhost:1521/FREEPDB1'
+        );
+    });
+
+    it('unwraps a single-quoted value', () => {
+        assert.equal(workflowEnvValue("  UTPLSQL_IT_USER: 'ut3'\n", 'UTPLSQL_IT_USER'), 'ut3');
+    });
+
+    it('leaves a plain unquoted value with no comment unchanged, as before', () => {
+        assert.equal(workflowEnvValue('  UTPLSQL_IT_USER: ut3\n', 'UTPLSQL_IT_USER'), 'ut3');
     });
 });
