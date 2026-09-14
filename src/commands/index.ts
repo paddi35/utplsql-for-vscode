@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import {
     addProfile,
+    connectStringDeclaresTcps,
     ConnectionProfile,
     deleteWalletPassword,
     getProfile,
@@ -174,13 +175,9 @@ export async function runAddConnection(extCtx: vscode.ExtensionContext, prompts:
         }
         const walletLocation = await prompts.walletLocation();
         const walletPassword = walletLocation ? await prompts.walletPassword(walletLocation) : undefined;
-        if (walletLocation && !/tcps/i.test(connectString)) {
-            // node-oracledb's Thin-mode Easy-Connect parser defaults to
-            // protocol TCP and only reads the wallet file when the resolved
-            // protocol is TCPS (see ezConnectResolver.js/sessionAtts.js) --
-            // a wallet configured against anything else is silently never
-            // touched, connecting in the clear instead of over TLS (issue
-            // #83). This is a heuristic, not a hard gate: connectString may
+        if (walletLocation && !connectStringDeclaresTcps(connectString)) {
+            // See connectStringDeclaresTcps' own doc comment (connections.ts)
+            // for why this is a heuristic, not a hard gate: connectString may
             // be a TNS alias whose own tnsnames.ora entry specifies
             // PROTOCOL=TCPS with nothing visible here to check, so a profile
             // that genuinely means to do that is only warned, never blocked.

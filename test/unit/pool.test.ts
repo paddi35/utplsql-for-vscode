@@ -356,4 +356,75 @@ describe('pool (real oracledb, unreachable host, poolMin 0 — no database neede
             }
         });
     });
+
+    describe('wallet/TCPS mismatch logging (issue #96 follow-up)', () => {
+        /** Minimal structural stand-in for vscode.OutputChannel — only appendLine is called by pool.ts. */
+        function createFakeOutputChannel(): { appendLine(line: string): void; lines: string[] } {
+            const lines: string[] = [];
+            return { lines, appendLine: (line: string) => lines.push(line) };
+        }
+
+        it('logs a warning when a wallet is configured but connectString does not declare TCPS, even for a profile the addConnection wizard never saw', async () => {
+            const { pool, uninstall } = loadPool();
+            try {
+                const output = createFakeOutputChannel();
+                pool.setPoolOutputChannel(output as unknown as Parameters<PoolModule['setPoolOutputChannel']>[0]);
+                const secrets = createFakeSecretStorage({ 'utplsql.password.unit-test-wallet-mismatch': 'pw' });
+                await pool.getPool(
+                    { name: 'unit-test-wallet-mismatch', user: 'hr', connectString: UNREACHABLE_CONNECT_STRING, walletLocation: '/opt/wallet' },
+                    secrets
+                );
+
+                assert.ok(
+                    output.lines.some((l) => l.includes('unit-test-wallet-mismatch') && l.includes('does not declare TCPS')),
+                    `expected a log line about the wallet/TCPS mismatch, got: ${JSON.stringify(output.lines)}`
+                );
+
+                await pool.closePool('unit-test-wallet-mismatch');
+            } finally {
+                uninstall();
+            }
+        });
+
+        it('does not log anything when connectString declares TCPS', async () => {
+            const { pool, uninstall } = loadPool();
+            try {
+                const output = createFakeOutputChannel();
+                pool.setPoolOutputChannel(output as unknown as Parameters<PoolModule['setPoolOutputChannel']>[0]);
+                const secrets = createFakeSecretStorage({ 'utplsql.password.unit-test-wallet-tcps': 'pw' });
+                await pool.getPool(
+                    { name: 'unit-test-wallet-tcps', user: 'hr', connectString: 'tcps://localhost:19999/doesnotexist', walletLocation: '/opt/wallet' },
+                    secrets
+                );
+
+                assert.ok(
+                    !output.lines.some((l) => l.includes('does not declare TCPS')),
+                    `expected no wallet/TCPS mismatch log line, got: ${JSON.stringify(output.lines)}`
+                );
+
+                await pool.closePool('unit-test-wallet-tcps');
+            } finally {
+                uninstall();
+            }
+        });
+
+        it('does not log anything when no wallet is configured', async () => {
+            const { pool, uninstall } = loadPool();
+            try {
+                const output = createFakeOutputChannel();
+                pool.setPoolOutputChannel(output as unknown as Parameters<PoolModule['setPoolOutputChannel']>[0]);
+                const secrets = createFakeSecretStorage({ 'utplsql.password.unit-test-no-wallet': 'pw' });
+                await pool.getPool({ name: 'unit-test-no-wallet', user: 'hr', connectString: UNREACHABLE_CONNECT_STRING }, secrets);
+
+                assert.ok(
+                    !output.lines.some((l) => l.includes('does not declare TCPS')),
+                    `expected no wallet/TCPS mismatch log line, got: ${JSON.stringify(output.lines)}`
+                );
+
+                await pool.closePool('unit-test-no-wallet');
+            } finally {
+                uninstall();
+            }
+        });
+    });
 });
