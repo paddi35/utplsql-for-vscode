@@ -37,11 +37,31 @@ describe('sanitizeTerminalText', () => {
         assert.equal(sanitizeTerminalText(`before${ESC}7after`), 'beforeafter');
     });
 
-    it('leaves a bare escape with no recognized sequence in place (harmless alone), but strips other C0/DEL control characters', () => {
-        assert.equal(sanitizeTerminalText(`a${ESC}\x00c\x7Fd`), `a${ESC}cd`);
+    it('strips a bare escape with no recognized sequence, along with the other C0/DEL control characters around it', () => {
+        assert.equal(sanitizeTerminalText(`a${ESC}\x00c\x7Fd`), 'acd');
     });
 
     it('strips a bare carriage return', () => {
         assert.equal(sanitizeTerminalText('a\rb'), 'ab');
+    });
+
+    it('does not let a disallowed C0 byte between ESC and its final byte splice them into a live sequence once that byte is stripped', () => {
+        // Regression case: an earlier version left the ESC in place here
+        // (none of the CSI/OSC/generic alternatives match ESC+CR), then a
+        // second, independent pass stripped the CR, leaving ESC directly
+        // adjacent to '[2J' -- a real clear-screen sequence neither the
+        // original input nor either pass alone ever produced on its own.
+        assert.equal(sanitizeTerminalText(`before${ESC}\r[2Jafter`), 'before[2Jafter');
+    });
+
+    it('strips a bare trailing ESC so concatenating two independently-sanitized chunks cannot reconstruct a sequence', () => {
+        // Regression case: runHandler.ts sanitizes serverOutput, errorStack
+        // and each warning separately and appends them to the same output
+        // stream. A trailing ESC surviving one call plus a leading '[2J'
+        // surviving the next both look clean on their own, but a stateful
+        // ANSI parser reassembles them into a live sequence once concatenated.
+        const producer = sanitizeTerminalText(`before${ESC}`);
+        const consumer = sanitizeTerminalText('[2Jafter');
+        assert.equal(producer + consumer, 'before[2Jafter');
     });
 });
