@@ -379,17 +379,20 @@ export async function rebuildAnnotationCache(conn: Connection, owner: string): P
 
 /**
  * utPLSQL's built-in coverage reporters — excluded from getReportersList()'s
- * result below. They pass is_output_reporter = 'Y' same as any text/XML
- * reporter, but need a_source_file_mappings (and friends) to produce
- * anything; "Export with Reporter" (runWithReporter in reporterDao.ts) only
- * ever sends a_paths/a_reporters, never file mappings. Listing one of these
- * in that command's reporter QuickPick let a user pick a reporter that can
- * never write a single line, so its consumer's get_lines_cursor() always
- * hit its a_initial_timeout and failed with ORA-20215 — deterministically,
- * regardless of what was selected to export. Coverage export already has
- * its own dedicated, properly-wired path ("Run with Coverage" /
- * buildProduceSql's coverage options in realtimeDao.ts), so these are
- * simply not offered here rather than made to half-work through this one.
+ * result by default (see includeCoverageReporters below). They pass
+ * is_output_reporter = 'Y' same as any text/XML reporter, but need
+ * a_source_file_mappings (and friends) to produce anything, which most
+ * callers of this list never send. Issue #98 wired that up for one specific
+ * caller — "Export with Reporter" (utplsql.runWithReporter's command
+ * handler, commands/index.ts, and its run-profile equivalent,
+ * runReporterExport in testing/reporterProfile.ts) — via
+ * testing/coverage.ts's computeCoverageExportScope, threaded through
+ * reporterDao.ts's runWithReporter as CoverageExportOptions. Those two
+ * callers pass { includeCoverageReporters: true } for exactly that reason;
+ * any other/future caller of getReportersList() keeps getting the old,
+ * safe-by-default list, since offering a coverage reporter without also
+ * building it a file mapping just reproduces the ORA-20215 this filter
+ * exists to prevent.
  */
 const COVERAGE_REPORTER_NAMES = new Set(['UT_COVERAGE_HTML_REPORTER', 'UT_COVERAGE_SONAR_REPORTER', 'UT_COVERAGE_COBERTURA_REPORTER']);
 
@@ -406,7 +409,17 @@ function bareObjectName(qualifiedName: string): string {
     return dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1);
 }
 
-export async function getReportersList(conn: Connection): Promise<ReporterInfo[]> {
+/** Whether reporterObjectName names one of utPLSQL's built-in coverage reporters — exported so callers that DO know how to feed one a file mapping (issue #98) can tell it apart from a plain text/XML reporter in their own QuickPick/help text. */
+export function isCoverageReporterName(reporterObjectName: string): boolean {
+    return COVERAGE_REPORTER_NAMES.has(bareObjectName(reporterObjectName).toUpperCase());
+}
+
+export interface GetReportersListOptions {
+    /** Include ut_coverage_html_reporter/ut_coverage_sonar_reporter/ut_coverage_cobertura_reporter — only for a caller that builds them a_source_file_mappings itself (see COVERAGE_REPORTER_NAMES's doc comment). Defaults to false. */
+    includeCoverageReporters?: boolean;
+}
+
+export async function getReportersList(conn: Connection, options: GetReportersListOptions = {}): Promise<ReporterInfo[]> {
     const result = await conn.execute<Record<string, unknown>>(
         `SELECT reporter_object_name, is_output_reporter FROM TABLE(ut_runner.get_reporters_list())`
     );
@@ -415,7 +428,7 @@ export async function getReportersList(conn: Connection): Promise<ReporterInfo[]
             reporterObjectName: String(r.REPORTER_OBJECT_NAME),
             isOutputReporter: String(r.IS_OUTPUT_REPORTER) === 'Y'
         }))
-        .filter((r) => r.isOutputReporter && !COVERAGE_REPORTER_NAMES.has(bareObjectName(r.reporterObjectName).toUpperCase()));
+        .filter((r) => r.isOutputReporter && (options.includeCoverageReporters || !isCoverageReporterName(r.reporterObjectName)));
 }
 
 /**

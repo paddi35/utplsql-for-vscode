@@ -3,11 +3,13 @@ import { Connection } from 'oracledb';
 import { getProfile } from '../db/connections';
 import { getPool, recyclePool, describeConnectionError } from '../db/pool';
 import * as dao from '../db/utplsqlDao';
-import { runWithReporter } from '../db/reporterDao';
+import { runWithReporter, CoverageExportOptions } from '../db/reporterDao';
 import { UtplsqlContext } from './model';
 import { groupRequest } from './runHandler';
 import { readReporterOptions } from './reporterConfig';
 import { sanitizeTerminalText } from './terminalSanitize';
+import { computeCoverageExportScope } from './coverage';
+import { CoverageScopeItem } from './coverageScope';
 
 function appendOutputCrlf(run: vscode.TestRun, text: string, item?: vscode.TestItem): void {
     run.appendOutput(sanitizeTerminalText(text).replace(/\r?\n/g, '\r\n') + '\r\n', undefined, item);
@@ -55,7 +57,11 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
                 const pool = await getPool(cfg, ctx.secrets);
                 const probeConn = await pool.getConnection();
                 try {
-                    const reporters = await dao.getReportersList(probeConn);
+                    // includeCoverageReporters: true — issue #98, this profile
+                    // now knows how to feed a coverage reporter a
+                    // a_source_file_mappings itself (see the
+                    // isCoverageReporterName branch in the run loop below).
+                    const reporters = await dao.getReportersList(probeConn, { includeCoverageReporters: true });
                     reporterSets.push(new Set(reporters.map((r) => r.reporterObjectName)));
                 } finally {
                     await probeConn.close();
@@ -78,10 +84,19 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
             );
             return;
         }
-        const reporterName = await vscode.window.showQuickPick(common, { title: 'Select reporter' });
-        if (!reporterName) {
+        const reporterPick = await vscode.window.showQuickPick(
+            common.map((name) => ({
+                label: name,
+                description: dao.isCoverageReporterName(name)
+                    ? 'coverage — scoped to the selection\'s dependencies, same as "Run with Coverage"'
+                    : undefined
+            })),
+            { title: 'Select reporter' }
+        );
+        if (!reporterPick) {
             return;
         }
+        const reporterName = reporterPick.label;
         const target = await vscode.window.showQuickPick(['Show in Output Channel', 'Save to File'], {
             title: grouped.size > 1 ? 'Where should each connection profile’s report go? (one file per profile)' : 'Where should the report go?'
         });
@@ -101,6 +116,45 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
                 continue;
             }
             const pool = await getPool(cfg, ctx.secrets);
+
+            let coverage: CoverageExportOptions | undefined;
+            if (dao.isCoverageReporterName(reporterName)) {
+                const scopeItems: CoverageScopeItem[] = [];
+                for (const item of group.items) {
+                    const meta = ctx.meta.get(item.id);
+                    if (!meta?.row) {
+                        continue;
+                    }
+                    scopeItems.push({ owner: meta.owner, objectName: meta.row.objectName });
+                }
+                const scopeConn = await pool.getConnection();
+                let scope;
+                try {
+                    scope = await computeCoverageExportScope(ctx, scopeConn, profile, scopeItems);
+                } finally {
+                    await scopeConn.close();
+                }
+                if (scope.fileMappings.length === 0) {
+                    group.items.forEach((i) =>
+                        run.errored(
+                            i,
+                            new vscode.TestMessage(`utPLSQL: no resolvable dependencies to report coverage for in '${profile}' — nothing was exported.`)
+                        )
+                    );
+                    continue;
+                }
+                coverage = {
+                    fileMappings: scope.fileMappings,
+                    testFileMappings: scope.testFileMappings,
+                    schemes: scope.schemes,
+                    includeObjects: scope.includeObjects,
+                    includeSchemaExpr: scope.includeSchemaExpr,
+                    includeObjectExpr: scope.includeObjectExpr,
+                    excludeSchemaExpr: scope.excludeSchemaExpr,
+                    excludeObjectExpr: scope.excludeObjectExpr
+                };
+            }
+
             let producerConn: Connection;
             try {
                 producerConn = await pool.getConnection();
@@ -119,7 +173,7 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
             const runPaths = group.paths.map((p) => `${p.owner}:${p.suitepath}`);
             let cancelled = false;
             try {
-                const result = await runWithReporter(producerConn, consumerConn, reporterName, runPaths, readReporterOptions(), token);
+                const result = await runWithReporter(producerConn, consumerConn, reporterName, runPaths, { ...readReporterOptions(), coverage }, token);
                 cancelled = result.cancelled;
                 if (cancelled) {
                     // Whatever text was collected before cancellation is a

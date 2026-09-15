@@ -1,5 +1,14 @@
 import oracledb, { Connection, ResultSet } from 'oracledb';
-import { DEFAULT_INITIAL_TIMEOUT_SEC, DEFAULT_NEXT_EVENT_TIMEOUT_SEC, cancelConsumer, newReporterId, validateIdentifier } from './realtimeDao';
+import {
+    DEFAULT_INITIAL_TIMEOUT_SEC,
+    DEFAULT_NEXT_EVENT_TIMEOUT_SEC,
+    cancelConsumer,
+    coverageScopeArgsClause,
+    CoverageScopeArgs,
+    fileMappingsLiteral,
+    newReporterId,
+    validateIdentifier
+} from './realtimeDao';
 
 function quoteLiteral(value: string): string {
     return `'${value.replace(/'/g, "''")}'`;
@@ -9,27 +18,62 @@ function varchar2List(values: string[]): string {
     return values.length === 0 ? 'ut_varchar2_list()' : `ut_varchar2_list(${values.map(quoteLiteral).join(', ')})`;
 }
 
+/**
+ * Wires a_source_file_mappings (and friends) into runWithReporter's producer
+ * block for utPLSQL's built-in coverage reporters (ut_coverage_html_reporter,
+ * ut_coverage_sonar_reporter, ut_coverage_cobertura_reporter) — issue #98.
+ * Without this, a coverage reporter picked in "Export with Reporter" had
+ * nothing to report coverage *of* and its consumer's get_lines_cursor()
+ * always hit a_initial_timeout with ORA-20215, regardless of what was run.
+ * Callers (commands/index.ts's utplsql.runWithReporter,
+ * testing/reporterProfile.ts's runReporterExport) build this the same way
+ * "Run with Coverage" does, via testing/coverage.ts's
+ * computeCoverageExportScope, so both paths agree on scope/file-mapping
+ * resolution and only the attached reporter differs.
+ */
+export interface CoverageExportOptions extends CoverageScopeArgs {
+    /** { file: workspace-relative path, owner, name, type } */
+    fileMappings: Array<{ file: string; owner: string; name: string; type: string }>;
+    /** a_test_file_mappings — objects to report as test files rather than source under coverage. */
+    testFileMappings?: Array<{ file: string; owner: string; name: string; type: string }>;
+}
+
 export interface RunWithReporterOptions {
     /** a_client_character_set — the charset the exported text is transcoded to, e.g. for a file export whose destination expects UTF-8 regardless of the DB session's default. */
     clientCharacterSet?: string;
     /** a_color_console — ANSI colors in the reporter's own text output (meaningful for e.g. ut_documentation_reporter, not for a machine-readable format like JUnit/Sonar). */
     colorConsole?: boolean;
+    /** Coverage-reporter export (see CoverageExportOptions above) — omit for every non-coverage reporter. */
+    coverage?: CoverageExportOptions;
 }
 
-/** Pure SQL builder for runWithReporter's producer block, split out so the a_color_console/a_client_character_set wiring is unit-testable without a real connection. */
+/** Pure SQL builder for runWithReporter's producer block, split out so the a_color_console/a_client_character_set/coverage wiring is unit-testable without a real connection. */
 export function buildRunWithReporterSql(id: string, reporterType: string, paths: string[], options: RunWithReporterOptions = {}): string {
     validateIdentifier(reporterType, 'reporter type');
+    const coverage = options.coverage;
     // No separate output_buffer.init() call: set_reporter_id() already runs
     // output_buffer.init(a_reporter_id) internally (see realtimeDao.ts's
     // reportersClause doc comment) — calling init() again afterward with no
     // argument would regenerate a random output_id and desync producer from
     // consumer.
+    const coverageDecls = coverage
+        ? `\n   l_source_mappings ut_file_mappings := ut_file_mappings(\n            ${fileMappingsLiteral(coverage.fileMappings)}\n         );` +
+          (coverage.testFileMappings && coverage.testFileMappings.length > 0
+              ? `\n   l_test_mappings ut_file_mappings := ut_file_mappings(\n            ${fileMappingsLiteral(coverage.testFileMappings)}\n         );`
+              : '')
+        : '';
+    const coverageArgs = coverage
+        ? `,\n      a_source_file_mappings => l_source_mappings` +
+          (coverage.testFileMappings && coverage.testFileMappings.length > 0 ? `,\n      a_test_file_mappings => l_test_mappings` : '') +
+          coverageScopeArgsClause(coverage)
+        : '';
     const runArgs =
         `a_paths => ${varchar2List(paths)}, a_reporters => ut_reporters(l_reporter)` +
         (options.colorConsole ? `, a_color_console => true` : '') +
-        (options.clientCharacterSet ? `, a_client_character_set => ${quoteLiteral(options.clientCharacterSet)}` : '');
+        (options.clientCharacterSet ? `, a_client_character_set => ${quoteLiteral(options.clientCharacterSet)}` : '') +
+        coverageArgs;
     return `DECLARE
-   l_reporter ${reporterType} := ${reporterType}();
+   l_reporter ${reporterType} := ${reporterType}();${coverageDecls}
 BEGIN
    l_reporter.set_reporter_id(${quoteLiteral(id)});
    ut_runner.run(${runArgs});
