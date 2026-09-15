@@ -10,6 +10,7 @@ import { UtplsqlContext } from '../../src/testing/model';
 import { runTests as runControllerTests } from '../../src/testing/runHandler';
 import { buildSourceIndexWatcherCases } from './support/sourceIndexCases';
 import { buildCoverageCases } from './support/coverageCases';
+import { buildReporterExportCases } from './support/reporterExportCases';
 import { buildDiscoveryCachingCases } from './support/discoveryCachingCases';
 
 const EXTENSION_ID = 'paddi35.utplsql-for-vscode';
@@ -454,7 +455,12 @@ async function testWorkspacePerfSettingsAreIgnored(ctx: UtplsqlContext, schema: 
  * and virtual-source FileCoverage/StatementCoverage, cancellation, the
  * Cobertura reporter, the HTML report's file-instead-of-webview behaviour
  * (issue #13) including an XSS-payload passthrough case, and (issue #15)
- * cross-profile dba_/all_ cache ordering — (issues #17/#22/#27, via
+ * cross-profile dba_/all_ cache ordering — (issue #98, via
+ * support/reporterExportCases.ts) the "Export with Reporter" run profile's
+ * coverage-reporter export — well-formed Sonar/Cobertura/HTML output, the
+ * virtual utplsql-source:// fallback for a package with no local file,
+ * cancellation mid-export, and the fail-fast error for a pick with no
+ * resolvable dependencies — (issues #17/#22/#27, via
  * support/discoveryCachingCases.ts) single-flighted suite-row discovery,
  * per-owner object-type cache priming, and the UT_LOGICAL_SUITE suitepath
  * grouping node, and (issues #20/#26, via support/sourceIndexCases.ts)
@@ -509,14 +515,15 @@ export async function run(): Promise<void> {
 
         // Order matters: the tag-scoped case needs `pkg` to still be
         // unexpanded (0 children) when it starts, so it must run first —
-        // see its own doc comment. The coverage and discovery-caching
-        // groups don't depend on pkg's starting state, but the
-        // discovery-caching group (issue #22) does depend on test_calc_pkg
-        // still having no local workspace file, so both new groups must
-        // come before the sourceIndexCases.ts cases, which are appended
-        // last because their final case deletes test_calc_pkg.pkb from
-        // disk (see that file's own doc comment for why they, in turn, must
-        // run in the order they're built in).
+        // see its own doc comment. The coverage, reporter-export and
+        // discovery-caching groups don't depend on pkg's starting state, but
+        // the discovery-caching group (issue #22) and the reporter-export
+        // group's no-local-file case (issue #98) both depend on
+        // test_calc_pkg still having no local workspace file, so all three
+        // new groups must come before the sourceIndexCases.ts cases, which
+        // are appended last because their final case deletes
+        // test_calc_pkg.pkb from disk (see that file's own doc comment for
+        // why they, in turn, must run in the order they're built in).
         const connInfo = { user, password, connectString, owner };
         const cases: Array<[string, () => Promise<void>]> = [
             ['a tag-scoped run resolves an unexpanded package', () => testTagScopedRunResolvesAnUnexpandedPackage(ctx, pkg!)],
@@ -529,6 +536,7 @@ export async function run(): Promise<void> {
             ],
             ['a workspace-supplied utplsql.perf.* setting is ignored (scope: machine)', () => testWorkspacePerfSettingsAreIgnored(ctx, schema!)],
             ...buildCoverageCases(ctx, schema!, pkg!, workspaceUri!, connInfo, PACKAGE_LABEL),
+            ...buildReporterExportCases(ctx, schema!, pkg!),
             ...buildDiscoveryCachingCases(ctx, schema!, connInfo, PACKAGE_LABEL),
             ...buildSourceIndexWatcherCases(ctx, pkg!, workspaceUri!)
         ];
