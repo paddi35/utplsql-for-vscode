@@ -69,6 +69,7 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
             return;
         }
         const common = [...reporterSets[0]].filter((name) => reporterSets.every((s) => s.has(name))).sort();
+        ctx.output.appendLine(`utPLSQL: reporters offered for export: ${common.join(', ') || '(none)'}`);
         if (common.length === 0) {
             vscode.window.showErrorMessage(
                 profiles.length > 1
@@ -151,7 +152,13 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
                 // ordering as runOneProfile's finally block (runHandler.ts)
                 // and for the same reason: recyclePool()'s pool.close(0)
                 // must not race a still-executing statement on producerConn.
-                if (cancelled) {
+                // Checked via token rather than the local `cancelled` flag:
+                // runWithReporter can throw instead of returning (e.g.
+                // cancelConsumer()'s break() racing an in-flight
+                // get_lines_cursor() call for a bulk-buffer reporter), which
+                // lands in the catch above with `cancelled` left false even
+                // though consumerConn may already be broken.
+                if (cancelled || token.isCancellationRequested) {
                     await recyclePool(profile);
                 }
             }

@@ -652,6 +652,7 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
                 vscode.window.showErrorMessage('utPLSQL: no output reporters available on this DB.');
                 return;
             }
+            ctx.output.appendLine(`utPLSQL: reporters offered for export: ${reporters.map((r) => r.reporterObjectName).join(', ')}`);
             const reporterName = await vscode.window.showQuickPick(
                 reporters.map((r) => r.reporterObjectName),
                 { title: 'Select reporter' }
@@ -687,14 +688,18 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
                         // runWithReporterDao's cancelConsumer(), so a second
                         // close() on it throwing is expected, not a failure.
                         await consumerConn.close().catch(() => undefined);
-                    }
-                    // Only after both connections are safely closed — same
-                    // ordering as runOneProfile's finally block
-                    // (runHandler.ts) and for the same reason: recyclePool()'s
-                    // pool.close(0) must not race a still-executing statement
-                    // on producerConn.
-                    if (result.cancelled) {
-                        await recyclePool(resolved.profile);
+                        // Checked via token rather than `result.cancelled`:
+                        // runWithReporterDao can throw instead of returning
+                        // (e.g. cancelConsumer()'s break() racing an
+                        // in-flight get_lines_cursor() call for a
+                        // bulk-buffer reporter), in which case `result` was
+                        // never assigned but consumerConn may already be
+                        // broken. token.isCancellationRequested is true in
+                        // exactly the same cases result.cancelled would have
+                        // been, so this still only recycles on cancellation.
+                        if (token.isCancellationRequested) {
+                            await recyclePool(resolved.profile);
+                        }
                     }
                     return result;
                 }

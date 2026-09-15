@@ -137,6 +137,30 @@ describe('runWithReporter cancellation', () => {
         assert.deepEqual(calls, ['break', 'close:{"drop":true}']);
     });
 
+    it('propagates a getRow() rejection as a real failure when it was not caused by cancellation', async () => {
+        const { signal } = fakeToken();
+        const timeoutError = new Error(
+            'ORA-20215: Timeout occurred while waiting for report data producer to start. Waited for: 60 seconds.'
+        );
+        const rs = {
+            getRow: async () => {
+                throw timeoutError;
+            },
+            close: async () => undefined
+        } as unknown as ResultSet<Record<string, unknown>>;
+        const consumerConn = {
+            execute: async () => ({ outBinds: { cur: rs } }),
+            break: async () => undefined,
+            close: async () => undefined
+        } as unknown as Connection;
+        const producerConn = { execute: async () => undefined } as unknown as Connection;
+
+        await assert.rejects(
+            () => runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', ['UT3:test_pkg'], {}, signal),
+            (err: unknown) => err === timeoutError
+        );
+    });
+
     it('always attaches the producer statement\'s rejection, never leaving it floating', async () => {
         const { signal } = fakeToken();
         let getRowCount = 0;
