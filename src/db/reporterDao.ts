@@ -248,7 +248,16 @@ END;`;
             const rs = (result.outBinds as { cur: ResultSet<Record<string, unknown>> }).cur;
             await drainLines(rs, lines, () => cancelled, onProgress);
         } catch (err) {
-            drainError = err;
+            // Mirrors drainLines()'s own getRow() rejection handling above:
+            // cancelConsumer()'s break() can land while consumeExecPromise
+            // (get_lines_cursor() itself) is still pending for a bulk-buffer
+            // reporter's synchronous wait loop, rejecting it with the same
+            // kind of "connection broken" error getRow() would otherwise
+            // surface. Swallowed only when cancelled is already true, so a
+            // genuine failure (e.g. ORA-20215) still propagates.
+            if (!cancelled) {
+                drainError = err;
+            }
         }
 
         await producePromise;
