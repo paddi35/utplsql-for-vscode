@@ -33,6 +33,66 @@ describe('buildRunWithReporterSql', () => {
         const sql = buildRunWithReporterSql("abc' --", 'ut_documentation_reporter', ['UT3']);
         assert.match(sql, /set_reporter_id\('abc'' --'\)/);
     });
+
+    // Issue #98: a coverage reporter (ut_coverage_html_reporter,
+    // ut_coverage_sonar_reporter, ut_coverage_cobertura_reporter) needs
+    // a_source_file_mappings (and friends) to produce anything at all — a
+    // plain reporter pick must take the unchanged, mapping-free code path.
+    it('omits every coverage argument/declaration when no coverage option is given', () => {
+        const sql = buildRunWithReporterSql('abc123', 'ut_junit_reporter', ['UT3:test_pkg']);
+        assert.doesNotMatch(sql, /a_source_file_mappings/);
+        assert.doesNotMatch(sql, /a_test_file_mappings/);
+        assert.doesNotMatch(sql, /a_coverage_schemes/);
+        assert.doesNotMatch(sql, /l_source_mappings/);
+    });
+
+    it('declares l_source_mappings and passes a_source_file_mappings for a coverage reporter', () => {
+        const sql = buildRunWithReporterSql('abc123', 'ut_coverage_sonar_reporter', ['UT3:calc_pkg'], {
+            coverage: {
+                fileMappings: [{ file: 'calc_pkg.pkb', owner: 'UT3', name: 'CALC_PKG', type: 'PACKAGE BODY' }]
+            }
+        });
+        assert.match(sql, /l_source_mappings ut_file_mappings := ut_file_mappings\(\s*ut_file_mapping\('calc_pkg\.pkb', 'UT3', 'CALC_PKG', 'PACKAGE BODY'\)\s*\);/);
+        assert.match(sql, /a_source_file_mappings => l_source_mappings/);
+        assert.doesNotMatch(sql, /a_test_file_mappings/);
+    });
+
+    it('declares l_test_mappings and passes a_test_file_mappings only when testFileMappings is non-empty', () => {
+        const sql = buildRunWithReporterSql('abc123', 'ut_coverage_sonar_reporter', ['UT3:calc_pkg'], {
+            coverage: {
+                fileMappings: [{ file: 'calc_pkg.pkb', owner: 'UT3', name: 'CALC_PKG', type: 'PACKAGE BODY' }],
+                testFileMappings: [{ file: 'test_calc_pkg.pkb', owner: 'UT3', name: 'TEST_CALC_PKG', type: 'PACKAGE BODY' }]
+            }
+        });
+        assert.match(sql, /l_test_mappings ut_file_mappings := ut_file_mappings\(\s*ut_file_mapping\('test_calc_pkg\.pkb', 'UT3', 'TEST_CALC_PKG', 'PACKAGE BODY'\)\s*\);/);
+        assert.match(sql, /a_test_file_mappings => l_test_mappings/);
+    });
+
+    it('passes a_coverage_schemes/a_include_objects and the four regex expr args when given', () => {
+        const sql = buildRunWithReporterSql('abc123', 'ut_coverage_sonar_reporter', ['UT3'], {
+            coverage: {
+                fileMappings: [],
+                schemes: ['UT3'],
+                includeObjects: ['CALC_PKG'],
+                includeSchemaExpr: 'UT3.*',
+                excludeObjectExpr: 'TEST_.*'
+            }
+        });
+        assert.match(sql, /a_coverage_schemes => ut_varchar2_list\('UT3'\)/);
+        assert.match(sql, /a_include_objects => ut_varchar2_list\('CALC_PKG'\)/);
+        assert.match(sql, /a_include_schema_expr => 'UT3\.\*'/);
+        assert.match(sql, /a_exclude_object_expr => 'TEST_\.\*'/);
+    });
+
+    it('rejects an includeObjects entry that is not a plain identifier, same as the live coverage run', () => {
+        assert.throws(
+            () =>
+                buildRunWithReporterSql('abc123', 'ut_coverage_sonar_reporter', ['UT3'], {
+                    coverage: { fileMappings: [], includeObjects: ["CALC_PKG'; DROP TABLE t --"] }
+                }),
+            /invalid include object/
+        );
+    });
 });
 
 /**

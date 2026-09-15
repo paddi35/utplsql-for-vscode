@@ -13,6 +13,7 @@ import {
     parseItemType,
     isTestItem,
     getReportersList,
+    isCoverageReporterName,
     SuiteInfoRow
 } from '../../src/db/utplsqlDao';
 
@@ -77,6 +78,38 @@ describe('getReportersList', () => {
             reporters.map((r) => r.reporterObjectName),
             ['UT3.UT_DOCUMENTATION_REPORTER', 'UT3.UT_JUNIT_REPORTER']
         );
+    });
+
+    // Issue #98: "Export with Reporter" now knows how to feed a coverage
+    // reporter a file mapping (via testing/coverage.ts's
+    // computeCoverageExportScope), so its callers opt back into the coverage
+    // reporters this suite's other case still excludes by default.
+    it('includes coverage reporters when includeCoverageReporters is true, still excluding non-output reporters', async () => {
+        const conn = fakeRowsConnection([
+            { REPORTER_OBJECT_NAME: 'UT3.UT_DOCUMENTATION_REPORTER', IS_OUTPUT_REPORTER: 'Y' },
+            { REPORTER_OBJECT_NAME: 'UT3.UT_COVERAGE_SONAR_REPORTER', IS_OUTPUT_REPORTER: 'Y' },
+            { REPORTER_OBJECT_NAME: 'UT3.UT_COVERAGE_COBERTURA_REPORTER', IS_OUTPUT_REPORTER: 'Y' },
+            { REPORTER_OBJECT_NAME: 'UT3.UT_COVERAGE_HTML_REPORTER', IS_OUTPUT_REPORTER: 'Y' },
+            { REPORTER_OBJECT_NAME: 'UT3.UT_REALTIME_REPORTER', IS_OUTPUT_REPORTER: 'N' }
+        ]);
+        const reporters = await getReportersList(conn, { includeCoverageReporters: true });
+        assert.deepEqual(
+            reporters.map((r) => r.reporterObjectName),
+            ['UT3.UT_DOCUMENTATION_REPORTER', 'UT3.UT_COVERAGE_SONAR_REPORTER', 'UT3.UT_COVERAGE_COBERTURA_REPORTER', 'UT3.UT_COVERAGE_HTML_REPORTER']
+        );
+    });
+});
+
+describe('isCoverageReporterName', () => {
+    it('recognizes all three built-in coverage reporters, schema-qualified or bare', () => {
+        assert.equal(isCoverageReporterName('UT3.UT_COVERAGE_HTML_REPORTER'), true);
+        assert.equal(isCoverageReporterName('UT_COVERAGE_SONAR_REPORTER'), true);
+        assert.equal(isCoverageReporterName('ut3.ut_coverage_cobertura_reporter'), true);
+    });
+
+    it('does not flag a plain text/XML reporter', () => {
+        assert.equal(isCoverageReporterName('UT3.UT_JUNIT_REPORTER'), false);
+        assert.equal(isCoverageReporterName('UT_DOCUMENTATION_REPORTER'), false);
     });
 });
 

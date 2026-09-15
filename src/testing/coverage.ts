@@ -10,7 +10,7 @@ import { UtplsqlContext } from './model';
 import { virtualSourceUri } from '../workspace/virtualSource';
 import { groupRequest, runOneProfile, readRandomOrderConfig } from './runHandler';
 import { withContentSecurityPolicy } from './coverageHtml';
-import { computeCoverageScope, CoverageScopeItem } from './coverageScope';
+import { computeCoverageScope, CoverageScopeItem, ObjectRef } from './coverageScope';
 import { sharedObjectTypeCache } from './objectTypeCache';
 import { measure } from '../perf';
 
@@ -223,6 +223,76 @@ async function resolveFileMappings(
     return { fileMappings, pathToUri };
 }
 
+export interface CoverageExportScope {
+    schemes: string[];
+    includeObjects: string[];
+    fileMappings: CoverageOptions['fileMappings'];
+    /** The scope's own test packages, reported via a_test_file_mappings — see resolveFileMappings' caller below for why. */
+    testFileMappings: CoverageOptions['fileMappings'];
+    pathToUri: Map<string, vscode.Uri>;
+    /** *_dependencies-derived names that couldn't be embedded in the generated PL/SQL — see computeCoverageScope's own doc comment (coverageScope.ts). Already logged to ctx.output by the time this returns; a caller only needs this to decide whether an empty/reduced scope should also fail fast. */
+    unusableNames: ObjectRef[];
+    includeSchemaExpr?: string;
+    includeObjectExpr?: string;
+    excludeSchemaExpr?: string;
+    excludeObjectExpr?: string;
+}
+
+/**
+ * The *_dependencies-derived scope and local-file/utplsql-source:// file
+ * mapping resolution shared between the live "Run with Coverage" profile
+ * (buildCoverageOptions below) and the coverage-reporter export path added
+ * for issue #98 (utplsql.runWithReporter's command handler and
+ * testing/reporterProfile.ts's runReporterExport) — both need exactly the
+ * same scope computation, only the reporter(s) that end up consuming it
+ * differ (ut_realtime_reporter + a coverage reporter for a live run, vs. a
+ * single coverage reporter picked in a QuickPick for an export).
+ */
+export async function computeCoverageExportScope(
+    ctx: UtplsqlContext,
+    scopeConn: Connection,
+    profile: string,
+    scopeItems: Iterable<CoverageScopeItem>
+): Promise<CoverageExportScope> {
+    const coverageCfg = vscode.workspace.getConfiguration('utplsql.coverage');
+    const scope = await computeCoverageScope(scopeItems, (owner, names) => dao.includes(scopeConn, owner, names, profile), {
+        excludeObjects: coverageCfg.get<string[]>('excludeObjects', []),
+        schemesOverride: coverageCfg.get<string[]>('schemes', []),
+        includeObjectsOverride: coverageCfg.get<string[]>('includeObjects', [])
+    });
+
+    // Reported, not swallowed: an object dropped here really is missing from
+    // the coverage result, and the reason (a name that cannot be written
+    // into the generated PL/SQL) is not something the user could work out
+    // from the numbers alone. Before this was filtered, such a name failed
+    // the entire run at SQL-build time.
+    for (const dropped of scope.unusableNames) {
+        ctx.output.appendLine(
+            `utPLSQL: coverage — excluding '${dropped.owner}.${dropped.name}' from the coverage scope: its name is not a plain identifier and cannot be passed to ut_runner.run`
+        );
+    }
+
+    const { fileMappings, pathToUri } = await resolveFileMappings(ctx, scopeConn, profile, scope.includeObjects.values());
+    // The test packages themselves are reported via a_test_file_mappings
+    // instead of a_exclude_objects: utPLSQL distinguishes "this file is
+    // test code" from "this file was not measured at all", which
+    // SonarQube/Cobertura consumers treat differently.
+    const { fileMappings: testFileMappings } = await resolveFileMappings(ctx, scopeConn, profile, scope.testObjects.values());
+
+    return {
+        schemes: scope.schemes,
+        includeObjects: [...scope.includeObjects.values()].map((v) => v.name),
+        fileMappings,
+        testFileMappings,
+        pathToUri,
+        unusableNames: scope.unusableNames,
+        includeSchemaExpr: coverageCfg.get<string>('includeSchemaExpr', '') || undefined,
+        includeObjectExpr: coverageCfg.get<string>('includeObjectExpr', '') || undefined,
+        excludeSchemaExpr: coverageCfg.get<string>('excludeSchemaExpr', '') || undefined,
+        excludeObjectExpr: coverageCfg.get<string>('excludeObjectExpr', '') || undefined
+    };
+}
+
 async function buildCoverageOptions(ctx: UtplsqlContext, profile: string, items: vscode.TestItem[]): Promise<BuiltCoverage | undefined> {
     const cfg = getProfile(profile);
     if (!cfg) {
@@ -251,47 +321,24 @@ async function buildCoverageOptions(ctx: UtplsqlContext, profile: string, items:
                     scopeItems.push({ owner: meta.owner, objectName: meta.row.objectName });
                 }
 
-                const scope = await computeCoverageScope(scopeItems, (owner, names) => dao.includes(scopeConn, owner, names, profile), {
-                    excludeObjects: coverageCfg.get<string[]>('excludeObjects', []),
-                    schemesOverride: coverageCfg.get<string[]>('schemes', []),
-                    includeObjectsOverride: coverageCfg.get<string[]>('includeObjects', [])
-                });
-
-                // Reported, not swallowed: an object dropped here really is
-                // missing from the coverage result, and the reason (a name that
-                // cannot be written into the generated PL/SQL) is not something
-                // the user could work out from the numbers alone. Before this was
-                // filtered, such a name failed the entire run at SQL-build time.
-                for (const dropped of scope.unusableNames) {
-                    ctx.output.appendLine(
-                        `utPLSQL: coverage — excluding '${dropped.owner}.${dropped.name}' from the coverage scope: its name is not a plain identifier and cannot be passed to ut_runner.run`
-                    );
-                }
-
-                const { fileMappings, pathToUri } = await resolveFileMappings(ctx, scopeConn, profile, scope.includeObjects.values());
-                // The test packages themselves are reported via a_test_file_mappings
-                // instead of a_exclude_objects: utPLSQL distinguishes "this file is
-                // test code" from "this file was not measured at all", which
-                // SonarQube/Cobertura consumers treat differently.
-                const { fileMappings: testFileMappings } = await resolveFileMappings(ctx, scopeConn, profile, scope.testObjects.values());
-
+                const scope = await computeCoverageExportScope(ctx, scopeConn, profile, scopeItems);
                 const additionalReporterSetting = coverageCfg.get<'sonar' | 'cobertura'>('reporter', 'sonar');
 
                 return {
                     options: {
                         reporter: 'ut_coverage_sonar_reporter',
                         schemes: scope.schemes,
-                        includeObjects: [...scope.includeObjects.values()].map((v) => v.name),
-                        fileMappings,
-                        testFileMappings,
+                        includeObjects: scope.includeObjects,
+                        fileMappings: scope.fileMappings,
+                        testFileMappings: scope.testFileMappings,
                         htmlReport: coverageCfg.get<boolean>('htmlReport', false),
                         additionalReporter: additionalReporterSetting === 'cobertura' ? 'ut_coverage_cobertura_reporter' : undefined,
-                        includeSchemaExpr: coverageCfg.get<string>('includeSchemaExpr', '') || undefined,
-                        includeObjectExpr: coverageCfg.get<string>('includeObjectExpr', '') || undefined,
-                        excludeSchemaExpr: coverageCfg.get<string>('excludeSchemaExpr', '') || undefined,
-                        excludeObjectExpr: coverageCfg.get<string>('excludeObjectExpr', '') || undefined
+                        includeSchemaExpr: scope.includeSchemaExpr,
+                        includeObjectExpr: scope.includeObjectExpr,
+                        excludeSchemaExpr: scope.excludeSchemaExpr,
+                        excludeObjectExpr: scope.excludeObjectExpr
                     },
-                    pathToUri
+                    pathToUri: scope.pathToUri
                 };
             },
             { items: items.length }

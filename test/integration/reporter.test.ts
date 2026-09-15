@@ -48,7 +48,7 @@ describe('reporter export against a real schema [integration]', function () {
         );
     });
 
-    it('excludes the built-in coverage reporters — they need a_source_file_mappings this export path never sends, so picking one always times out with ORA-20215', async () => {
+    it('excludes the built-in coverage reporters by default — a caller that has not built them a_source_file_mappings would otherwise always time out with ORA-20215', async () => {
         const reporters = await dao.getReportersList(producerConn);
         const names = reporters.map((r) => r.reporterObjectName.toUpperCase());
         assert.ok(
@@ -56,6 +56,39 @@ describe('reporter export against a real schema [integration]', function () {
             `expected no coverage reporter in the export quick-pick, got: ${names.join(', ')}`
         );
     });
+
+    it('includes the built-in coverage reporters when includeCoverageReporters is requested (issue #98)', async () => {
+        const reporters = await dao.getReportersList(producerConn, { includeCoverageReporters: true });
+        const names = reporters.map((r) => r.reporterObjectName.toUpperCase());
+        for (const coverageReporter of ['UT_COVERAGE_HTML_REPORTER', 'UT_COVERAGE_SONAR_REPORTER', 'UT_COVERAGE_COBERTURA_REPORTER']) {
+            assert.ok(
+                names.some((n) => n.endsWith(coverageReporter)),
+                `expected ${coverageReporter} among the reporters when includeCoverageReporters is true, got: ${names.join(', ')}`
+            );
+        }
+    });
+
+    // Issue #98: "Export with Reporter" now feeds a coverage reporter the
+    // same a_source_file_mappings/a_coverage_schemes/a_include_objects a
+    // live "Run with Coverage" build would, so picking one here produces a
+    // real, well-formed report instead of timing out with ORA-20215.
+    for (const reporterType of ['ut_coverage_sonar_reporter', 'ut_coverage_cobertura_reporter', 'ut_coverage_html_reporter']) {
+        it(`${reporterType} produces non-empty, well-formed coverage output when given a_source_file_mappings via runWithReporter`, async () => {
+            const { output, cancelled } = await runWithReporter(producerConn, consumerConn, reporterType, [`${TEST_OWNER}:test_calc_pkg.test_add`], {
+                coverage: {
+                    schemes: [TEST_OWNER],
+                    includeObjects: ['CALC_PKG'],
+                    fileMappings: [{ file: 'db/calc_pkg.pkb', owner: TEST_OWNER, name: 'CALC_PKG', type: 'PACKAGE BODY' }],
+                    testFileMappings: [{ file: 'db/test_calc_pkg.pkb', owner: TEST_OWNER, name: 'TEST_CALC_PKG', type: 'PACKAGE BODY' }]
+                }
+            });
+            assert.equal(cancelled, false);
+            assert.ok(output.length > 0, `expected non-empty ${reporterType} output`);
+            if (reporterType !== 'ut_coverage_html_reporter') {
+                assert.match(output, /calc_pkg\.pkb/, `expected the mapped file path to appear in ${reporterType}'s XML`);
+            }
+        });
+    }
 
     it('a_color_console adds ANSI escape codes to the documentation reporter output', async () => {
         const { output: plain } = await runWithReporter(producerConn, consumerConn, 'ut_documentation_reporter', [`${TEST_OWNER}:test_calc_pkg.test_add`]);

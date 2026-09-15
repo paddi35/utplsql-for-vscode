@@ -14,11 +14,13 @@ import {
 import { getPool, recyclePool, validateSchemaName, describeConnectionError } from '../db/pool';
 import { forgetProfile, getSuiteRows } from '../testing/controller';
 import * as dao from '../db/utplsqlDao';
-import { runWithReporter as runWithReporterDao } from '../db/reporterDao';
+import { runWithReporter as runWithReporterDao, CoverageExportOptions } from '../db/reporterDao';
 import { UtplsqlContext } from '../testing/model';
 import { runTests } from '../testing/runHandler';
 import { parseId, rootId } from '../testing/ids';
 import { readReporterOptions } from '../testing/reporterConfig';
+import { computeCoverageExportScope } from '../testing/coverage';
+import { CoverageScopeItem } from '../testing/coverageScope';
 import { generateTestPackage, readGenerateOptions } from '../generate/testTemplate';
 import { matchesConfiguredLanguage } from '../workspace/languageIndex';
 import { listTnsAliases, resolveTnsAdminDir } from '../db/tnsnames';
@@ -644,7 +646,11 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             const probeConn = await pool.getConnection();
             let reporters;
             try {
-                reporters = await dao.getReportersList(probeConn);
+                // includeCoverageReporters: true — issue #98, this handler now
+                // knows how to feed a coverage reporter a_source_file_mappings
+                // itself (see the isCoverageReporterName branch below), so it
+                // no longer needs getReportersList's default exclusion.
+                reporters = await dao.getReportersList(probeConn, { includeCoverageReporters: true });
             } finally {
                 await probeConn.close();
             }
@@ -653,12 +659,46 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
                 return;
             }
             ctx.output.appendLine(`utPLSQL: reporters offered for export: ${reporters.map((r) => r.reporterObjectName).join(', ')}`);
-            const reporterName = await vscode.window.showQuickPick(
-                reporters.map((r) => r.reporterObjectName),
+            const reporterPick = await vscode.window.showQuickPick(
+                reporters.map((r) => ({
+                    label: r.reporterObjectName,
+                    description: dao.isCoverageReporterName(r.reporterObjectName)
+                        ? 'coverage — scoped to this package\'s dependencies, same as "Run with Coverage"'
+                        : undefined
+                })),
                 { title: 'Select reporter' }
             );
-            if (!reporterName) {
+            if (!reporterPick) {
                 return;
+            }
+            const reporterName = reporterPick.label;
+
+            let coverage: CoverageExportOptions | undefined;
+            if (dao.isCoverageReporterName(reporterName)) {
+                const scopeConn = await pool.getConnection();
+                let scope;
+                try {
+                    const scopeItems: CoverageScopeItem[] = [{ owner: resolved.owner, objectName: resolved.packageName }];
+                    scope = await computeCoverageExportScope(ctx, scopeConn, resolved.profile, scopeItems);
+                } finally {
+                    await scopeConn.close();
+                }
+                if (scope.fileMappings.length === 0) {
+                    vscode.window.showErrorMessage(
+                        `utPLSQL: '${resolved.packageName}' has no resolvable dependencies to report coverage for — nothing was exported.`
+                    );
+                    return;
+                }
+                coverage = {
+                    fileMappings: scope.fileMappings,
+                    testFileMappings: scope.testFileMappings,
+                    schemes: scope.schemes,
+                    includeObjects: scope.includeObjects,
+                    includeSchemaExpr: scope.includeSchemaExpr,
+                    includeObjectExpr: scope.includeObjectExpr,
+                    excludeSchemaExpr: scope.excludeSchemaExpr,
+                    excludeObjectExpr: scope.excludeObjectExpr
+                };
             }
             const runPath = `${resolved.owner}:${resolved.packageName}`;
 
@@ -678,8 +718,14 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
                     const consumerConn = await pool.getConnection();
                     let result: Awaited<ReturnType<typeof runWithReporterDao>>;
                     try {
-                        result = await runWithReporterDao(producerConn, consumerConn, reporterName, [runPath], readReporterOptions(), token, (message) =>
-                            progress.report({ message })
+                        result = await runWithReporterDao(
+                            producerConn,
+                            consumerConn,
+                            reporterName,
+                            [runPath],
+                            { ...readReporterOptions(), coverage },
+                            token,
+                            (message) => progress.report({ message })
                         );
                     } finally {
                         await producerConn.close().catch(() => undefined);

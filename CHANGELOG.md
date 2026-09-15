@@ -6,6 +6,15 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
 
 ### Added
 
+- **"Run with Reporter (Export)" can now export a coverage report**
+  (`ut_coverage_html_reporter`, `ut_coverage_sonar_reporter`, `ut_coverage_cobertura_reporter`),
+  both from the cursor-based command and the "Export with Reporter" run profile. Picking one of
+  these reporters now computes the same dependency-derived coverage scope and
+  local-file/`utplsql-source://` file mapping "Run with Coverage" uses, so the export produces a
+  real report scoped to the exported package's dependencies instead of always timing out with
+  `ORA-20215`. The QuickPick marks these three as "coverage" so it is clear the scope differs from
+  a plain text/XML export; picking one for a target with no resolvable dependencies fails fast with
+  a clear error instead of attempting a doomed run.
 - **Connection profiles can now configure a wallet** (`walletLocation`, optional `walletPassword`
   stored in `SecretStorage`) for mutual TLS or an Autonomous Database connection. "Add Connection"
   asks for both after the default schema; "Set Wallet Password for Connection" updates or clears

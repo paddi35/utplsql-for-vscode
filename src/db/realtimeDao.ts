@@ -113,7 +113,8 @@ interface ReportersClause {
  * Each additional reporter therefore needs its own freshly generated
  * 32-hex id instead of a string suffix on the primary one.
  */
-function fileMappingsLiteral(mappings: Array<{ file: string; owner: string; name: string; type: string }>): string {
+/** Exported for reuse by reporterDao.ts's coverage-reporter export path (issue #98), which needs the exact same ut_file_mapping(...) literal shape as the live coverage run built here. */
+export function fileMappingsLiteral(mappings: Array<{ file: string; owner: string; name: string; type: string }>): string {
     return mappings
         .map(
             (m) =>
@@ -143,12 +144,6 @@ function reportersClause(id: string, coverage?: CoverageOptions): ReportersClaus
         if (coverage.testFileMappings && coverage.testFileMappings.length > 0) {
             decls += `\n   l_test_mappings ut_file_mappings := ut_file_mappings(\n            ${fileMappingsLiteral(coverage.testFileMappings)}\n         );`;
         }
-        if (coverage.includeObjects) {
-            coverage.includeObjects.forEach((o) => validateIdentifier(o, 'include object'));
-        }
-        if (coverage.excludeObjects) {
-            coverage.excludeObjects.forEach((o) => validateIdentifier(o, 'exclude object'));
-        }
         if (coverage.htmlReport) {
             htmlId = newReporterId();
             const html = `l_html_rep`;
@@ -166,6 +161,47 @@ function reportersClause(id: string, coverage?: CoverageOptions): ReportersClaus
         }
     }
     return { reporters, decls, inits, coverageId, htmlId, additionalCoverageId };
+}
+
+export interface CoverageScopeArgs {
+    schemes?: string[];
+    includeObjects?: string[];
+    excludeObjects?: string[];
+    includeSchemaExpr?: string;
+    includeObjectExpr?: string;
+    excludeSchemaExpr?: string;
+    excludeObjectExpr?: string;
+}
+
+/**
+ * Builds (and validates) the a_coverage_schemes/a_include_objects/
+ * a_exclude_objects/a_*_expr argument fragment — shared between
+ * buildProduceSql's live coverage run below and reporterDao.ts's
+ * coverage-reporter export path (issue #98), so a future fix to one (e.g.
+ * the a_tags wrong-argument-type bug this file's own history records) can't
+ * silently diverge between the two callers. includeObjects/excludeObjects
+ * are validated as plain identifiers here — not left to the caller — since
+ * both go straight into a ut_varchar2_list(...) literal in the generated
+ * PL/SQL. The a_*_expr regex fields are quoted as string literals instead,
+ * same as a_tags: a real regex routinely contains characters ([A-Z_]%, |,
+ * etc.) that a bare identifier never would.
+ */
+export function coverageScopeArgsClause(scope: CoverageScopeArgs): string {
+    if (scope.includeObjects) {
+        scope.includeObjects.forEach((o) => validateIdentifier(o, 'include object'));
+    }
+    if (scope.excludeObjects) {
+        scope.excludeObjects.forEach((o) => validateIdentifier(o, 'exclude object'));
+    }
+    return (
+        (scope.schemes && scope.schemes.length > 0 ? `,\n      a_coverage_schemes => ${varchar2List(scope.schemes)}` : '') +
+        (scope.includeObjects && scope.includeObjects.length > 0 ? `,\n      a_include_objects => ${varchar2List(scope.includeObjects)}` : '') +
+        (scope.excludeObjects && scope.excludeObjects.length > 0 ? `,\n      a_exclude_objects => ${varchar2List(scope.excludeObjects)}` : '') +
+        (scope.includeSchemaExpr ? `,\n      a_include_schema_expr => ${quoteLiteral(scope.includeSchemaExpr)}` : '') +
+        (scope.includeObjectExpr ? `,\n      a_include_object_expr => ${quoteLiteral(scope.includeObjectExpr)}` : '') +
+        (scope.excludeSchemaExpr ? `,\n      a_exclude_schema_expr => ${quoteLiteral(scope.excludeSchemaExpr)}` : '') +
+        (scope.excludeObjectExpr ? `,\n      a_exclude_object_expr => ${quoteLiteral(scope.excludeObjectExpr)}` : '')
+    );
 }
 
 export interface ProduceOptions {
@@ -202,23 +238,7 @@ export function buildProduceSql(id: string, paths: string[], options: ProduceOpt
           (options.coverage.testFileMappings && options.coverage.testFileMappings.length > 0
               ? `,\n      a_test_file_mappings => l_test_mappings`
               : '') +
-          (options.coverage.schemes && options.coverage.schemes.length > 0
-              ? `,\n      a_coverage_schemes => ${varchar2List(options.coverage.schemes)}`
-              : '') +
-          (options.coverage.includeObjects && options.coverage.includeObjects.length > 0
-              ? `,\n      a_include_objects => ${varchar2List(options.coverage.includeObjects)}`
-              : '') +
-          (options.coverage.excludeObjects && options.coverage.excludeObjects.length > 0
-              ? `,\n      a_exclude_objects => ${varchar2List(options.coverage.excludeObjects)}`
-              : '') +
-          // Regex scoping (a_*_expr): plain varchar2, quoted as a literal like
-          // a_tags — NOT validateIdentifier'd, since a real regex routinely
-          // contains characters ([A-Z_]%, |, etc.) that a bare identifier
-          // never would.
-          (options.coverage.includeSchemaExpr ? `,\n      a_include_schema_expr => ${quoteLiteral(options.coverage.includeSchemaExpr)}` : '') +
-          (options.coverage.includeObjectExpr ? `,\n      a_include_object_expr => ${quoteLiteral(options.coverage.includeObjectExpr)}` : '') +
-          (options.coverage.excludeSchemaExpr ? `,\n      a_exclude_schema_expr => ${quoteLiteral(options.coverage.excludeSchemaExpr)}` : '') +
-          (options.coverage.excludeObjectExpr ? `,\n      a_exclude_object_expr => ${quoteLiteral(options.coverage.excludeObjectExpr)}` : '')
+          coverageScopeArgsClause(options.coverage)
         : '';
     const sql = `DECLARE
    ${decls}
