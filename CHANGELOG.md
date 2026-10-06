@@ -2,6 +2,16 @@
 
 All notable changes to the "utPLSQL for VS Code" extension are documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Connections are now closed after a test run** (issue #105). Once the last running Run, Run
+  with Coverage or Export with Reporter finishes, every connection pool with no connection still in
+  use is closed, so no Oracle session is left open — previously a user this extension had been
+  connected as could not be dropped until VS Code was reloaded. The next run reconnects. Set
+  `utplsql.connections.closeAfterRun` to `false` to keep connections open between runs.
+
 ## [0.2.0] - 2026-09-15 
 
 ### Added

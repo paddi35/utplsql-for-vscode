@@ -269,3 +269,67 @@ export async function recyclePool(name: string): Promise<void> {
         // that it is no longer cached, so the next getPool() call is clean.
     }
 }
+
+/**
+ * Issue #105: an Oracle user can't be dropped while it still has a session
+ * open, and every pool here keeps its idle sessions until the extension host
+ * shuts down — so after a single run, dropping the test user failed until VS
+ * Code was reloaded. Runs therefore bracket themselves with
+ * beginRunActivity(), and once the last concurrent run ends every pool with
+ * no checked-out connection is closed (unless
+ * utplsql.connections.closeAfterRun is turned off). The next getPool() call
+ * simply creates a fresh one, at the cost of one reconnect per run.
+ *
+ * Counted rather than closed per run: with two runs in flight against the
+ * same profile, the first one to finish must not pull the pool out from under
+ * the second. A pool that still has connections in use when the last run ends
+ * (a tree resolve, say) is left alone, since pool.close(0) would kill that
+ * checkout; it is picked up after the next run instead.
+ */
+let activeRuns = 0;
+
+export function closeAfterRunEnabled(): boolean {
+    return vscode.workspace.getConfiguration('utplsql').get<boolean>('connections.closeAfterRun', true) ?? true;
+}
+
+/**
+ * Marks a run as started and returns the function that marks it finished.
+ * Calling the returned function more than once only counts once.
+ */
+export function beginRunActivity(): () => Promise<void> {
+    activeRuns++;
+    let ended = false;
+    return async () => {
+        if (ended) {
+            return;
+        }
+        ended = true;
+        activeRuns--;
+        if (activeRuns === 0 && closeAfterRunEnabled()) {
+            await closeIdlePools();
+        }
+    };
+}
+
+/**
+ * Closes every cached pool that has no connection checked out. Each entry is
+ * removed from the cache synchronously, before its close() is awaited, so a
+ * getPool() call arriving in the meantime creates a new pool instead of being
+ * handed one that is shutting down.
+ */
+export async function closeIdlePools(): Promise<void> {
+    const idle = [...pools].filter(([, pool]) => pool.connectionsInUse === 0);
+    for (const [name] of idle) {
+        pools.delete(name);
+    }
+    await Promise.all(
+        idle.map(async ([name, pool]) => {
+            try {
+                await pool.close(0);
+                outputRef?.appendLine(`utPLSQL: closed connection pool for '${name}' after run (utplsql.connections.closeAfterRun).`);
+            } catch (err) {
+                outputRef?.appendLine(`utPLSQL: could not close connection pool for '${name}' — ${String(err)}`);
+            }
+        })
+    );
+}

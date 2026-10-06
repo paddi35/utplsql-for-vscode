@@ -25,8 +25,8 @@ type PoolModule = typeof import('../../src/db/pool');
  * dynamic require() inside a test body rather than a top-level import, and
  * support/moduleStub.ts for the substitution mechanism itself.
  */
-function loadPool(): { pool: PoolModule; uninstall(): void } {
-    const { module: fakeVscode } = createFakeVscode();
+function loadPool(config: Record<string, unknown> = {}): { pool: PoolModule; uninstall(): void } {
+    const { module: fakeVscode } = createFakeVscode(config);
     const vscodeStub = installModuleStub('vscode', fakeVscode);
 
     uncacheAllSrcModules();
@@ -422,6 +422,75 @@ describe('pool (real oracledb, unreachable host, poolMin 0 — no database neede
                 );
 
                 await pool.closePool('unit-test-no-wallet');
+            } finally {
+                uninstall();
+            }
+        });
+    });
+
+    /**
+     * Issue #105: pools are closed after the last concurrent run ends, so no
+     * Oracle session outlives a run (a connected user can't be dropped), unless
+     * utplsql.connections.closeAfterRun is false.
+     */
+    describe('closing pools after a run (issue #105)', () => {
+        it('closes the cached pool once the run ends, so the next getPool() creates a fresh one', async () => {
+            const { pool, uninstall } = loadPool();
+            try {
+                const secrets = createFakeSecretStorage({ 'utplsql.password.unit-test-close': 'pw' });
+                const profile = { name: 'unit-test-close', user: 'hr', connectString: UNREACHABLE_CONNECT_STRING };
+
+                const endRun = pool.beginRunActivity();
+                const first = await pool.getPool(profile, secrets);
+                await endRun();
+
+                assert.equal(first.status, oracledb.POOL_STATUS_CLOSED, 'expected the pool to be closed after the run');
+                const second = await pool.getPool(profile, secrets);
+                assert.notEqual(second, first, 'expected a fresh pool object after the run closed the old one');
+
+                await pool.closePool('unit-test-close');
+            } finally {
+                uninstall();
+            }
+        });
+
+        it('keeps the pool open while another run against it is still in flight', async () => {
+            const { pool, uninstall } = loadPool();
+            try {
+                const secrets = createFakeSecretStorage({ 'utplsql.password.unit-test-overlap': 'pw' });
+                const profile = { name: 'unit-test-overlap', user: 'hr', connectString: UNREACHABLE_CONNECT_STRING };
+
+                const endFirst = pool.beginRunActivity();
+                const endSecond = pool.beginRunActivity();
+                const created = await pool.getPool(profile, secrets);
+
+                await endFirst();
+                assert.equal(await pool.getPool(profile, secrets), created, 'expected the pool to stay cached while a run is still active');
+                // Ending the same run twice must not count as the other run ending.
+                await endFirst();
+                assert.equal(created.status, oracledb.POOL_STATUS_OPEN);
+
+                await endSecond();
+                assert.equal(created.status, oracledb.POOL_STATUS_CLOSED, 'expected the pool to be closed once the last run ended');
+            } finally {
+                uninstall();
+            }
+        });
+
+        it('leaves pools open when utplsql.connections.closeAfterRun is false', async () => {
+            const { pool, uninstall } = loadPool({ 'utplsql.connections.closeAfterRun': false });
+            try {
+                const secrets = createFakeSecretStorage({ 'utplsql.password.unit-test-keep': 'pw' });
+                const profile = { name: 'unit-test-keep', user: 'hr', connectString: UNREACHABLE_CONNECT_STRING };
+
+                const endRun = pool.beginRunActivity();
+                const created = await pool.getPool(profile, secrets);
+                await endRun();
+
+                assert.equal(created.status, oracledb.POOL_STATUS_OPEN);
+                assert.equal(await pool.getPool(profile, secrets), created, 'expected the pool to stay cached with the setting off');
+
+                await pool.closePool('unit-test-keep');
             } finally {
                 uninstall();
             }

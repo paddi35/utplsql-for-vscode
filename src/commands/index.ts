@@ -11,7 +11,7 @@ import {
     setWalletPassword,
     validateProfileName
 } from '../db/connections';
-import { getPool, recyclePool, validateSchemaName, describeConnectionError } from '../db/pool';
+import { getPool, recyclePool, validateSchemaName, describeConnectionError, beginRunActivity } from '../db/pool';
 import { forgetProfile, getSuiteRows } from '../testing/controller';
 import * as dao from '../db/utplsqlDao';
 import { runWithReporter as runWithReporterDao, CoverageExportOptions } from '../db/reporterDao';
@@ -493,6 +493,22 @@ function guarded<T extends unknown[]>(title: string, handler: (...args: T) => Pr
     };
 }
 
+/**
+ * Counts the wrapped command as a run for pool.ts's beginRunActivity()
+ * (issue #105), for commands that run tests on their own connections rather
+ * than through runTests() — which already counts itself.
+ */
+function asRun<T extends unknown[]>(handler: (...args: T) => Promise<void>): (...args: T) => Promise<void> {
+    return async (...args: T) => {
+        const endRunActivity = beginRunActivity();
+        try {
+            await handler(...args);
+        } finally {
+            await endRunActivity();
+        }
+    };
+}
+
 export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: UtplsqlContext): void {
     extCtx.subscriptions.push(
         vscode.commands.registerCommand('utplsql.runTestAtCursor', guarded('Run Test at Cursor', async (clickedItem?: vscode.TestItem) => {
@@ -633,7 +649,7 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
             }
         })),
 
-        vscode.commands.registerCommand('utplsql.runWithReporter', guarded('Run with Reporter (Export)', async (clickedItem?: vscode.TestItem) => {
+        vscode.commands.registerCommand('utplsql.runWithReporter', guarded('Run with Reporter (Export)', asRun(async (clickedItem?: vscode.TestItem) => {
             const resolved = resolveFromTestItem(ctx, clickedItem) ?? (await resolveAtCursor(ctx, 'Select an object to export', (profile) => suiteRowCandidates(ctx, profile)));
             if (!resolved) {
                 return;
@@ -767,7 +783,7 @@ export function registerTestCommands(extCtx: vscode.ExtensionContext, ctx: Utpls
                 ctx.output.appendLine(output);
                 ctx.output.show(true);
             }
-        })),
+        }))),
 
         vscode.commands.registerCommand('utplsql.generateTest', guarded('Generate Test Package', async (clickedItem?: vscode.TestItem) => {
             const resolved = resolveFromTestItem(ctx, clickedItem) ?? (await resolveAtCursor(ctx, 'Select an object to generate a test for', (_profile, cfg) => testableCandidates(ctx, cfg)));

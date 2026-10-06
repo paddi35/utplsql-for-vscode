@@ -106,6 +106,11 @@
           "default": "",
           "description": "Ordner mit tnsnames.ora (TNS_ADMIN). Wenn leer, wird die Einstellung 'sqldeveloper.connections.tnsConfiguration.path' der Oracle-SQL-Developer-Extension übernommen, aber nur, wenn sie auf Benutzer-/Geräteebene gesetzt ist — ein von einem Workspace gesetzter Wert wird ignoriert, da der Scope dieser fremden Einstellung nicht in unserer Kontrolle liegt —, sonst die Umgebungsvariable TNS_ADMIN. Wird als connectString direkt der Alias eingetragen, löst node-oracledb ihn beim Verbindungsaufbau selbst auf."
         },
+        "utplsql.connections.closeAfterRun": {
+          "type": "boolean",
+          "default": true,
+          "description": "Nach jedem Testlauf (Run, Run with Coverage, Export with Reporter) die Verbindungspools schließen, sobald kein weiterer Lauf mehr aktiv ist, damit keine Oracle-Sessions offen bleiben — sonst lässt sich z. B. ein verbundener Benutzer erst nach einem Neuladen von VS Code droppen. Der nächste Lauf baut die Verbindung neu auf. Deaktivieren, um die Verbindungen zwischen Läufen offen zu halten."
+        },
         "utplsql.discovery.languageIds": {
           "type": "array",
           "default": [

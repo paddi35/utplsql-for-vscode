@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { Connection } from 'oracledb';
 import { getProfile } from '../db/connections';
-import { getPool, recyclePool, describeConnectionError } from '../db/pool';
+import { getPool, recyclePool, describeConnectionError, beginRunActivity } from '../db/pool';
 import * as dao from '../db/utplsqlDao';
 import { runWithReporter, CoverageExportOptions } from '../db/reporterDao';
 import { UtplsqlContext } from './model';
@@ -26,6 +26,7 @@ function appendOutputCrlf(run: vscode.TestRun, text: string, item?: vscode.TestI
  */
 export async function runReporterExport(ctx: UtplsqlContext, request: vscode.TestRunRequest, token: vscode.CancellationToken): Promise<void> {
     const run = ctx.controller.createTestRun(request);
+    const endRunActivity = beginRunActivity();
     try {
         const grouped = await groupRequest(ctx, request);
         if (grouped.size === 0) {
@@ -219,5 +220,6 @@ export async function runReporterExport(ctx: UtplsqlContext, request: vscode.Tes
         }
     } finally {
         run.end();
+        await endRunActivity();
     }
 }

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { randomUUID } from 'node:crypto';
 import { Connection } from 'oracledb';
 import { XMLParser } from 'fast-xml-parser';
-import { getPool } from '../db/pool';
+import { getPool, beginRunActivity } from '../db/pool';
 import { getProfile } from '../db/connections';
 import * as dao from '../db/utplsqlDao';
 import { CoverageOptions } from '../db/realtimeDao';
@@ -73,6 +73,7 @@ const detailedCoverage = new WeakMap<vscode.TestRun, Map<string, vscode.Statemen
 
 export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRequest, token: vscode.CancellationToken): Promise<void> {
     const run = ctx.controller.createTestRun(request);
+    const endRunActivity = beginRunActivity();
     const detailByUri = new Map<string, vscode.StatementCoverage[]>();
     detailedCoverage.set(run, detailByUri);
     const { randomOrder, randomOrderSeed } = readRandomOrderConfig();
@@ -114,6 +115,7 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
         }
     } finally {
         run.end();
+        await endRunActivity();
     }
 }
 

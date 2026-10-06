@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { Connection } from 'oracledb';
 import { getProfile } from '../db/connections';
-import { getPool, recyclePool, describeConnectionError } from '../db/pool';
+import { getPool, recyclePool, describeConnectionError, beginRunActivity } from '../db/pool';
 import * as dao from '../db/utplsqlDao';
 import { getCachedVersion } from '../db/versionCache';
 import {
@@ -570,6 +570,7 @@ export async function runTests(
     options: RunTestsOptions = {}
 ): Promise<void> {
     const run = ctx.controller.createTestRun(request);
+    const endRunActivity = beginRunActivity();
     const { randomOrder, randomOrderSeed } = readRandomOrderConfig();
     if (randomOrder) {
         ctx.output.appendLine(
@@ -589,6 +590,7 @@ export async function runTests(
         }
     } finally {
         run.end();
+        await endRunActivity();
     }
 }
 
