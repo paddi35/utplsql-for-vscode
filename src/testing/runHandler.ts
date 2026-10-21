@@ -532,9 +532,9 @@ function guessOwner(suitepath: string, paths: OwnedPath[], known: Map<string, vs
             return p.owner;
         }
     }
-    // Same weakness as SQL Developer: suitepaths don't carry the owner, so a
-    // collision across schemas in one run picks the first candidate whose
-    // id is already known.
+    // Suite events carry only the suitepath, not the owner, so a collision
+    // across schemas in one run picks the first candidate whose id is
+    // already known.
     for (const p of paths) {
         if (known.has(pathId(profile, p.owner, suitepath))) {
             return p.owner;
