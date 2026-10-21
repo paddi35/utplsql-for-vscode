@@ -85,6 +85,7 @@ export interface PreTestEvent {
 export interface PostTestEvent {
     type: 'post-test';
     id: string;
+    testNumber?: number;
     startTime?: string;
     endTime?: string;
     executionTime?: number;
