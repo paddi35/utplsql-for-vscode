@@ -32,7 +32,7 @@ function text(value: unknown): string | undefined {
     if (value === undefined || value === null) {
         return undefined;
     }
-    if (typeof value === 'object' && value !== null && '#text' in (value as Record<string, unknown>)) {
+    if (typeof value === 'object' && '#text' in (value as Record<string, unknown>)) {
         return String((value as Record<string, unknown>)['#text']);
     }
     return String(value);

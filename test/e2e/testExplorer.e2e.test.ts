@@ -404,7 +404,14 @@ async function testWorkspacePerfSettingsAreIgnored(ctx: UtplsqlContext, schema: 
     const vscodeDir = path.join(folder.uri.fsPath, '.vscode');
     fs.mkdirSync(vscodeDir, { recursive: true });
     const settingsPath = path.join(vscodeDir, 'settings.json');
-    const previousSettings = fs.existsSync(settingsPath) ? fs.readFileSync(settingsPath, 'utf8') : undefined;
+    let previousSettings: string | undefined;
+    try {
+        previousSettings = fs.readFileSync(settingsPath, 'utf8');
+    } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw e;
+        }
+    }
     const outsidePath = path.join(os.tmpdir(), `utplsql-e2e-perf-exploit-${Date.now()}.jsonl`);
 
     try {
