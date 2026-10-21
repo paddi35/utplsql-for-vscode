@@ -51,7 +51,7 @@ the tree, `ut_realtime_reporter` for live results, and the coverage reporters fo
 
 - Oracle Database with **utPLSQL >= 3.1.3** installed (>= 3.1.4 for the real-time reporter used
   for running tests; discovery and reporter export need >= 3.1.3 for `get_suites_info`).
-- VS Code **1.137** or newer.
+- VS Code **1.140** or newer.
 - Network access from the machine running VS Code to the database.
 
 ---
