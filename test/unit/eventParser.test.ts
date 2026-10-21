@@ -95,6 +95,7 @@ describe('eventParser', () => {
         // failedExpectations are nested inside <test>, not on <event>.
         const xml = `<event type="post-test">
             <test id="suite1.test1">
+                <testNumber>7</testNumber>
                 <executionTime>0.1</executionTime>
                 <counter><disabled>0</disabled><success>0</success><failure>1</failure><error>0</error><warning>0</warning></counter>
                 <failedExpectations>
@@ -108,6 +109,7 @@ describe('eventParser', () => {
         </event>`;
         const event = parseEvent('post-test', xml) as PostTestEvent;
         assert.equal(event.id, 'suite1.test1');
+        assert.equal(event.testNumber, 7);
         assert.equal(event.failedExpectations.length, 1);
         assert.match(event.failedExpectations[0].caller ?? '', /line 42/);
     });

@@ -214,6 +214,7 @@ export function parseEvent(
                 const event: PostTestEvent = {
                     type: 'post-test',
                     id: text(testNode['@_id']) ?? text(testNode.id) ?? '',
+                    testNumber: num(testNode.testNumber),
                     startTime: text(testNode.startTime),
                     endTime: text(testNode.endTime),
                     executionTime: num(testNode.executionTime),

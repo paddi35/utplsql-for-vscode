@@ -26,6 +26,7 @@ import {
 } from '../model/events';
 import { escalateStatus } from '../model/tree';
 import { OwnedPath, dedupPathList, parseId, pathId } from './ids';
+import { EventOwnerResolver, firstOwner } from './eventOwners';
 import { UtplsqlContext } from './model';
 import { sanitizeTerminalText } from './terminalSanitize';
 import { formatCoverageScopeLine, formatProduceSqlLine, formatRunFailureLines, formatRunPathsLine, summarizeRun } from './runLogging';
@@ -153,7 +154,7 @@ function reconcileTree(
     schemaItems: Map<string, vscode.TestItem>
 ): void {
     topLevel.forEach((node, i) => {
-        const owner = requestedTopLevel[i]?.owner ?? requestedTopLevel[0]?.owner ?? '';
+        const owner = firstOwner(node) ?? requestedTopLevel[i]?.owner ?? requestedTopLevel[0]?.owner ?? '';
         const parent = schemaItems.get(owner) ?? [...schemaItems.values()][0];
         if (!parent) {
             return;
@@ -324,6 +325,7 @@ async function runOneProfile(
     });
 
     const activeItems = new Map<string, vscode.TestItem>();
+    let owners: EventOwnerResolver | undefined;
     const eventCounter = new PerfCounter();
     // Every item in `items` was run.enqueued() above, but a_tags/a_paths
     // scoping (see buildProduceSql) can mean the server only ever reports
@@ -387,32 +389,36 @@ async function runOneProfile(
             }
             switch (event.type) {
                 case 'pre-run': {
+                    owners = new EventOwnerResolver(event.items);
                     reconcileTree(ctx, known, profile, event.items, paths, schemaItems);
                     appendOutputCrlf(run, `utPLSQL: running ${event.totalNumberOfTests} test(s) on '${profile}'…`);
                     break;
                 }
                 case 'pre-suite': {
-                    const lookupId = pathId(profile, guessOwner(event.suite.id, paths, known, profile), event.suite.id);
+                    const owner = owners?.startSuite(event.suite.id) ?? guessOwner(event.suite.id, paths, known, profile);
+                    const lookupId = pathId(profile, owner, event.suite.id);
                     const item = known.get(lookupId);
                     trace(ctx, `utPLSQL: pre-suite id='${event.suite.id}' -> lookup '${lookupId}' -> ${item ? 'FOUND' : 'NOT FOUND'}`);
                     if (item) {
                         run.started(item);
-                        activeItems.set(event.suite.id, item);
+                        activeItems.set(`${owner}:${event.suite.id}`, item);
                     }
                     break;
                 }
                 case 'pre-test': {
-                    const lookupId = pathId(profile, guessOwner(event.test.id, paths, known, profile), event.test.id);
+                    const owner = owners?.ownerOfTest(event.test.testNumber) ?? guessOwner(event.test.id, paths, known, profile);
+                    const lookupId = pathId(profile, owner, event.test.id);
                     const item = known.get(lookupId);
                     trace(ctx, `utPLSQL: pre-test id='${event.test.id}' -> lookup '${lookupId}' -> ${item ? 'FOUND' : 'NOT FOUND'}`);
                     if (item) {
                         run.started(item);
-                        activeItems.set(event.test.id, item);
+                        activeItems.set(`${owner}:${event.test.id}`, item);
                     }
                     break;
                 }
                 case 'post-test': {
-                    const item = activeItems.get(event.id) ?? known.get(pathId(profile, guessOwner(event.id, paths, known, profile), event.id));
+                    const owner = owners?.ownerOfTest(event.testNumber) ?? guessOwner(event.id, paths, known, profile);
+                    const item = activeItems.get(`${owner}:${event.id}`) ?? known.get(pathId(profile, owner, event.id));
                     trace(ctx, `utPLSQL: post-test id='${event.id}' -> ${item ? 'FOUND' : 'NOT FOUND'}, counter=${JSON.stringify(event.counter)}`);
                     if (item) {
                         finalizedIds.add(item.id);
@@ -432,7 +438,8 @@ async function runOneProfile(
                     break;
                 }
                 case 'post-suite': {
-                    const item = activeItems.get(event.id) ?? known.get(pathId(profile, guessOwner(event.id, paths, known, profile), event.id));
+                    const owner = owners?.endSuite(event.id) ?? guessOwner(event.id, paths, known, profile);
+                    const item = activeItems.get(`${owner}:${event.id}`) ?? known.get(pathId(profile, owner, event.id));
                     if (item) {
                         finalizedIds.add(item.id);
                         // Roll up the suite's own status from its aggregated counter —
