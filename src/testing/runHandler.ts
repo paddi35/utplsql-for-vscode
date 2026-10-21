@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { Connection } from 'oracledb';
 import { getProfile } from '../db/connections';
-import { getPool, recyclePool, describeConnectionError } from '../db/pool';
+import { getPool, recyclePool, closePoolIfIdle, describeConnectionError } from '../db/pool';
 import * as dao from '../db/utplsqlDao';
 import { getCachedVersion } from '../db/versionCache';
 import {
@@ -563,6 +563,14 @@ export function readRandomOrderConfig(): { randomOrder: boolean; randomOrderSeed
     return { randomOrder, randomOrderSeed: randomOrder && seed > 0 ? seed : undefined };
 }
 
+/** Honours utplsql.connections.closeAfterRun (default on); see closePoolIfIdle for why. */
+export async function closePoolsAfterRun(profiles: Iterable<string>): Promise<void> {
+    if (!vscode.workspace.getConfiguration('utplsql').get<boolean>('connections.closeAfterRun', true)) {
+        return;
+    }
+    await Promise.all([...profiles].map((p) => closePoolIfIdle(p)));
+}
+
 export async function runTests(
     ctx: UtplsqlContext,
     request: vscode.TestRunRequest,
@@ -578,6 +586,7 @@ export async function runTests(
                 : 'utPLSQL: random test order enabled (no seed set — set utplsql.run.randomOrderSeed to reproduce this order)'
         );
     }
+    const profiles = new Set<string>();
     try {
         const grouped = await measure('groupRequest', () => groupRequest(ctx, request));
         for (const [profile, group] of grouped) {
@@ -585,10 +594,12 @@ export async function runTests(
                 group.items.forEach((i) => run.skipped(i));
                 continue;
             }
+            profiles.add(profile);
             await runOneProfile(ctx, run, profile, group.items, group.paths, token, { tags: options.tags, randomOrder, randomOrderSeed });
         }
     } finally {
         run.end();
+        await closePoolsAfterRun(profiles);
     }
 }
 

@@ -239,6 +239,27 @@ export async function closePool(name: string): Promise<void> {
     }
 }
 
+/**
+ * Closes the pool for `name` only if nothing has a connection checked out,
+ * so a run finishing never tears down a concurrent run, tree resolve or
+ * export on the same profile. Used for utplsql.connections.closeAfterRun:
+ * the pool's idle sessions otherwise stay open until VS Code is reloaded,
+ * which blocks DROP USER for the connected schema (issue #105). The next
+ * getPool() call simply creates a fresh pool.
+ */
+export async function closePoolIfIdle(name: string): Promise<void> {
+    const pool = pools.get(name);
+    if (!pool || pool.connectionsInUse > 0) {
+        return;
+    }
+    pools.delete(name);
+    try {
+        await pool.close(0);
+    } catch {
+        // best-effort: the pool is no longer cached either way
+    }
+}
+
 export async function closeAllPools(): Promise<void> {
     await Promise.all([...pools.keys()].map((name) => closePool(name)));
 }

@@ -8,7 +8,7 @@ import * as dao from '../db/utplsqlDao';
 import { CoverageOptions } from '../db/realtimeDao';
 import { UtplsqlContext } from './model';
 import { virtualSourceUri } from '../workspace/virtualSource';
-import { groupRequest, runOneProfile, readRandomOrderConfig } from './runHandler';
+import { groupRequest, runOneProfile, readRandomOrderConfig, closePoolsAfterRun } from './runHandler';
 import { withContentSecurityPolicy } from './coverageHtml';
 import { computeCoverageScope, CoverageScopeItem, ObjectRef } from './coverageScope';
 import { sharedObjectTypeCache } from './objectTypeCache';
@@ -78,6 +78,7 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
     const { randomOrder, randomOrderSeed } = readRandomOrderConfig();
     const htmlReportEnabled = vscode.workspace.getConfiguration('utplsql').get<boolean>('coverage.htmlReport');
     const reportsDir = vscode.Uri.joinPath(ctx.globalStorageUri, 'coverage-reports');
+    const profiles = new Set<string>();
     try {
         if (htmlReportEnabled) {
             // Once per run, before any profile is processed — see
@@ -96,6 +97,7 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
                 group.items.forEach((i) => run.skipped(i));
                 continue;
             }
+            profiles.add(profile);
             const built = await buildCoverageOptions(ctx, profile, group.items);
             const result = await runOneProfile(ctx, run, profile, group.items, group.paths, token, {
                 coverage: built?.options,
@@ -114,6 +116,7 @@ export async function runCoverage(ctx: UtplsqlContext, request: vscode.TestRunRe
         }
     } finally {
         run.end();
+        await closePoolsAfterRun(profiles);
     }
 }
 
