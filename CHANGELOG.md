@@ -275,6 +275,6 @@ Initial version.
 ### Known limitations
 
 - No PL/SQL debugger integration — VS Code has no built-in PL/SQL debug adapter to drive.
-- Suite paths returned by utPLSQL don't carry the owning schema, so a run spanning suites with the
-  same path in two different schemas can misattribute events to the wrong schema (the same
-  limitation Oracle SQL Developer's utPLSQL integration has).
+- Runs pass schema-qualified paths (`OWNER:suitepath`) to utPLSQL, but the streamed suite events
+  carry only the suite path, so a run spanning suites with the same path in two different schemas
+  can attribute a live event to the wrong schema's test item.

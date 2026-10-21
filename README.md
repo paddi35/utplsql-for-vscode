@@ -195,10 +195,12 @@ partial output rather than saving a truncated report as if it were finished.
 
 - **No PL/SQL debugger.** VS Code has no built-in PL/SQL debug adapter for this extension to
   drive, so stepping through PL/SQL is out of scope for now.
-- **Suite path collisions across schemas.** utPLSQL suite paths don't carry the owning schema.
-  Running suites that share the same path in two different schemas in a single run can
-  misattribute a live event to the wrong schema's test item — the same known limitation Oracle
-  SQL Developer's utPLSQL integration has.
+- **Live-event attribution across schemas.** Runs themselves are unambiguous: the extension
+  always passes schema-qualified paths (`OWNER:suitepath`) to `ut_runner.run`, as utPLSQL
+  requires for any schema other than the session's current one. The suite events streamed back
+  carry only the suite path, though, so when one run contains suites with the same path in two
+  different schemas, the extension has to guess which schema's test item an event belongs to
+  and can pick the wrong one. Results in the database are not affected.
 - **`DATE` columns in a `sys_refcursor` comparison.** Without `ut.set_nls`/`ut.reset_nls` around
   the comparison, `DATE` values are compared using the session's default NLS date format instead
   of as a proper date-time value. `ut.set_nls` must stay active through both `OPEN`s *and* the
