@@ -232,6 +232,11 @@
           "default": false,
           "description": "ANSI-Farben im Reporter-Export aktivieren (a_color_console) — sinnvoll für textuelle Reporter wie ut_documentation_reporter, nicht für maschinenlesbare Formate."
         },
+        "utplsql.connections.closeAfterRun": {
+          "type": "boolean",
+          "default": true,
+          "description": "Close the database connection pool after a test run (and coverage run) finishes, so the schema user is no longer connected and can be dropped. Disable to keep sessions open between runs."
+        },
         "utplsql.trace": {
           "type": "boolean",
           "default": false,
