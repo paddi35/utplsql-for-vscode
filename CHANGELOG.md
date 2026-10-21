@@ -12,6 +12,14 @@ All notable changes to the "utPLSQL for VS Code" extension are documented in thi
   connection in use — a concurrent run or tree refresh — is left open. Set the option to `false`
   to keep sessions open between runs.
 
+### Fixed
+
+- A run containing suites with the same suite path in two different schemas could show a live
+  result on the wrong schema's test item, because events were matched to test items by suite path
+  alone. The owner is now taken from the `pre-run` event, which lists every test with its
+  `ownerName` and `testNumber`: test events are resolved by `testNumber`, suite events by their
+  position in the `pre-run` tree.
+
 ## [0.2.0] - 2026-09-15 
 
 ### Added
