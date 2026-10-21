@@ -2,6 +2,16 @@
 
 All notable changes to the "utPLSQL for VS Code" extension are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **The connection pool is now closed after a test or coverage run**
+  (`utplsql.connections.closeAfterRun`, default `true`), so the schema user is no longer
+  connected afterwards and can be dropped without reloading VS Code. A pool that still has a
+  connection in use — a concurrent run or tree refresh — is left open. Set the option to `false`
+  to keep sessions open between runs.
+
 ## [0.2.0] - 2026-09-15 
 
 ### Added
