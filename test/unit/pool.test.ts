@@ -83,6 +83,51 @@ describe('pool (real oracledb, unreachable host, poolMin 0 — no database neede
         }
     });
 
+    it('closePoolIfIdle closes and uncaches an idle pool, so the next getPool() creates a fresh one', async () => {
+        const { pool, uninstall } = loadPool();
+        try {
+            const secrets = createFakeSecretStorage({ 'utplsql.password.unit-test-idle': 'pw' });
+            const profile = { name: 'unit-test-idle', user: 'hr', connectString: UNREACHABLE_CONNECT_STRING };
+
+            const first = await pool.getPool(profile, secrets);
+            await pool.closePoolIfIdle('unit-test-idle');
+            const second = await pool.getPool(profile, secrets);
+            assert.notEqual(second, first, 'expected a fresh pool object after closePoolIfIdle');
+
+            await pool.closePool('unit-test-idle');
+        } finally {
+            uninstall();
+        }
+    });
+
+    it('closePoolIfIdle leaves the pool open while a connection is checked out', async () => {
+        const { pool, uninstall } = loadPool();
+        try {
+            const secrets = createFakeSecretStorage({ 'utplsql.password.unit-test-busy': 'pw' });
+            const profile = { name: 'unit-test-busy', user: 'hr', connectString: UNREACHABLE_CONNECT_STRING };
+
+            const first = await pool.getPool(profile, secrets);
+            // No database to check a real connection out of; simulate one in use.
+            Object.defineProperty(first, 'connectionsInUse', { value: 1, configurable: true });
+            await pool.closePoolIfIdle('unit-test-busy');
+            assert.equal(await pool.getPool(profile, secrets), first, 'expected the busy pool to stay cached');
+
+            Object.defineProperty(first, 'connectionsInUse', { value: 0, configurable: true });
+            await pool.closePool('unit-test-busy');
+        } finally {
+            uninstall();
+        }
+    });
+
+    it('closePoolIfIdle on an unknown name is a no-op and does not throw', async () => {
+        const { pool, uninstall } = loadPool();
+        try {
+            await assert.doesNotReject(() => pool.closePoolIfIdle('does-not-exist'));
+        } finally {
+            uninstall();
+        }
+    });
+
     it('getPool throws a clear error when no password is stored for the profile', async () => {
         const { pool, uninstall } = loadPool();
         try {
